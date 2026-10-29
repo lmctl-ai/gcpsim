@@ -56,6 +56,7 @@ Install gcloud 543.0.0, then run:
 
 ```sh
 python3 scripts/test-cli.py dist/gcpsim
+python3 scripts/test-lifecycle.py dist/gcpsim
 python3 scripts/test-gcloud.py dist/gcpsim
 ```
 
@@ -71,3 +72,26 @@ Windows x64. Tags `v*` publish binaries and SHA256SUMS only after all jobs pass.
 Native Linux builds target Ubuntu 22.04 (glibc); Windows requires the Visual C++
 runtime. Other upstream services and Docker-backed data planes are outside this
 repository's current compatibility gate; no complete GCP fidelity is claimed.
+
+## gcloud quickstart
+
+With `gcpsim serve` running in another terminal:
+
+```sh
+export CLOUDSDK_CORE_PROJECT=gcpsim-local
+export CLOUDSDK_AUTH_ACCESS_TOKEN=gcpsim-local-token
+export CLOUDSDK_API_ENDPOINT_OVERRIDES_STORAGE=http://127.0.0.1:4588/storage/v1/
+export CLOUDSDK_API_ENDPOINT_OVERRIDES_PUBSUB=http://127.0.0.1:4588/
+gcloud storage buckets create gs://gcpsim-demo --location=us-central1
+printf 'hello gcpsim\n' > hello.txt
+gcloud storage cp hello.txt gs://gcpsim-demo/hello.txt
+gcloud storage cat gs://gcpsim-demo/hello.txt
+gcloud pubsub topics create gcpsim-demo
+gcloud pubsub subscriptions create gcpsim-demo-sub --topic=gcpsim-demo
+gcloud pubsub topics publish gcpsim-demo --message='hello gcpsim'
+gcloud pubsub subscriptions pull gcpsim-demo-sub --auto-ack
+```
+
+These overrides are for the current shell. `*_EMULATOR_HOST` alone does not
+redirect gcloud. Our gcloud tests exercise REST; the upstream gRPC services
+remain available but are not independently certified by this test suite.
