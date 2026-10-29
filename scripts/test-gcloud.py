@@ -45,7 +45,7 @@ with tempfile.TemporaryDirectory(prefix='gcpsim-test-') as tmp:
         cmd = [gcloud, '--quiet'] + list(args)
         if json_output:
             cmd += ['--format=json']
-        r = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=60)
+        r = subprocess.run(cmd, env=env, cwd=tmp, capture_output=True, text=True, timeout=60)
         assert r.returncode == 0, (cmd, r.stdout, r.stderr)
         return json.loads(r.stdout) if json_output and r.stdout.strip() else r.stdout
 
@@ -71,9 +71,9 @@ with tempfile.TemporaryDirectory(prefix='gcpsim-test-') as tmp:
             original = tmp / 'payload.txt'
             payload = b'gcpsim real gcloud round trip\n\x00\xff\n'
             original.write_bytes(payload)
-            cloud('storage', 'cp', str(original), f'gs://{bucket}/payload.bin', json_output=False)
+            cloud('storage', 'cp', original.name, f'gs://{bucket}/payload.bin', json_output=False)
             downloaded = tmp / 'download.bin'
-            cloud('storage', 'cp', f'gs://{bucket}/payload.bin', str(downloaded), json_output=False)
+            cloud('storage', 'cp', f'gs://{bucket}/payload.bin', downloaded.name, json_output=False)
             assert downloaded.read_bytes() == payload, 'GCS bytes differ'
             print('PASS: GCS bucket create, upload and byte-exact download')
             cloud('pubsub', 'topics', 'create', topic)
