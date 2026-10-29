@@ -43,7 +43,8 @@ cmd = [shutil.which('mvn') or 'mvn', '-B', 'package', '-Dmaven.test.skip=true',
 if a.offline:
     cmd.append('-o')
 if a.native:
-    cmd += ['-Pnative', '-Dquarkus.native.native-image-xmx=4g']
+    heap = os.environ.get('GCPSIM_BUILD_HEAP', '6g')
+    cmd += ['-Pnative', '-Dquarkus.native.native-image-xmx=' + heap]
 subprocess.run(cmd, cwd=source, check=True)
 dist = ROOT / 'dist'
 dist.mkdir(exist_ok=True)

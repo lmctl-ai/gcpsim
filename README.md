@@ -42,7 +42,9 @@ small Java CLI overlay, without maintaining a fork or mirroring upstream.
 
 `python3 scripts/build.py` builds a JVM distribution for faster iteration;
 run `java -jar dist/quarkus-app/quarkus-run.jar serve`. Add `--offline` to
-require the cached source archive and Maven dependencies. Runtime GCS/Pub/Sub
+require the cached source archive and Maven dependencies. Native compilation uses
+a 6 GiB Java heap by default (`GCPSIM_BUILD_HEAP` overrides it); allow additional
+RAM for compiler overhead. This is a build-time limit, not a runtime allocation. Runtime GCS/Pub/Sub
 operations require no network outside loopback. Build dependencies require a
 network on first use.
 
