@@ -45,6 +45,10 @@ if a.offline:
 if a.native:
     heap = os.environ.get('GCPSIM_BUILD_HEAP', '6g')
     cmd += ['-Pnative', '-Dquarkus.native.native-image-xmx=' + heap]
+    if os.name == 'nt':
+        # A Unix libc binding must not initialize while compiling on Windows.
+        cmd.append('-Dquarkus.native.additional-build-args-append='
+                   '--initialize-at-run-time=com.github.dockerjava.transport.DomainSocket')
 subprocess.run(cmd, cwd=source, check=True)
 dist = ROOT / 'dist'
 dist.mkdir(exist_ok=True)

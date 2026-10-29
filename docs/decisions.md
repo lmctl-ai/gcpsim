@@ -18,3 +18,10 @@
   parity: the release gate here covers CLI, GCS and Pub/Sub only.
 - Preserve upstream MIT license. Third-party Maven dependencies retain their
   own licenses; consult the pinned upstream POM for the dependency inventory.
+
+- Windows native compilation defers docker-java's Unix `DomainSocket` class
+  initialization to runtime. Its static JNA binding looks for libc `write`,
+  which does not exist on Windows. This appends a build flag without replacing
+  upstream's native configuration; Windows Docker data planes remain untested.
+- CI serializes each platform separately, so a Windows packaging fix can be
+  tested while a different platform is still completing native compilation.

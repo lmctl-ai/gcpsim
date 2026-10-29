@@ -7,12 +7,12 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: false
 jobs:
   native:
     name: ${{ matrix.name }}
+    concurrency:
+      group: native-${{ github.ref }}-${{ matrix.name }}
+      cancel-in-progress: false
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
