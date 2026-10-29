@@ -1,0 +1,6 @@
+.cache/
+build/
+dist/
+__pycache__/
+*.log
+data/
