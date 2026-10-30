@@ -70,7 +70,9 @@ are used. Missing gcloud fails explicitly. See [decisions](docs/decisions.md) fo
 why gcloud is used instead of lmgcp today.
 
 Push and pull-request CI build and test Linux x64/arm64, macOS x64/arm64, and
-Windows x64. Tags `v*` publish binaries and SHA256SUMS only after all jobs pass.
+Windows x64. Tags `v*` publish binaries and SHA256SUMS only after all jobs pass. Native builds
+are cached by source, version, build script, platform, and toolchain fingerprint;
+every run tests the binary again, including cache hits.
 Native Linux builds target Ubuntu 22.04 (glibc); Windows requires the Visual C++
 runtime. Other upstream services and Docker-backed data planes are outside this
 repository's current compatibility gate; no complete GCP fidelity is claimed.

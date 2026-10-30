@@ -57,9 +57,25 @@ jobs:
           python scripts/test-cli.py dist/quarkus-app/quarkus-run.jar
           python scripts/test-lifecycle.py dist/quarkus-app/quarkus-run.jar
           python scripts/test-gcloud.py dist/quarkus-app/quarkus-run.jar
-      - name: Native build and real client tests
+      - name: Fingerprint native toolchain
+        id: toolchain
         run: |
-          python scripts/build.py --native
+          python -c "import hashlib,os,shutil,subprocess; output=subprocess.check_output([shutil.which('native-image'), '--version']); open(os.environ['GITHUB_OUTPUT'],'a').write('sha='+hashlib.sha256(output).hexdigest()+'\n')"
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        id: native-cache
+        with:
+          path: dist/gcpsim${{ matrix.ext }}
+          key: native-${{ matrix.name }}-${{ steps.toolchain.outputs.sha }}-${{ hashFiles('src/**', 'VERSION', 'upstream.lock.json', 'scripts/build.py') }}
+      - name: Native build
+        if: steps.native-cache.outputs.cache-hit != 'true'
+        run: python scripts/build.py --native
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        if: steps.native-cache.outputs.cache-hit != 'true'
+        with:
+          path: dist/gcpsim${{ matrix.ext }}
+          key: ${{ steps.native-cache.outputs.cache-primary-key }}
+      - name: Native real client tests
+        run: |
           python scripts/test-cli.py 'dist/gcpsim${{ matrix.ext }}'
           python scripts/test-lifecycle.py 'dist/gcpsim${{ matrix.ext }}'
           python scripts/test-gcloud.py 'dist/gcpsim${{ matrix.ext }}'
