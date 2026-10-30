@@ -11,7 +11,7 @@ Download a binary and `SHA256SUMS` from the [releases](https://github.com/lmctl-
 For Linux x64:
 
 ```sh
-gh release download v0.1.0 --repo lmctl-ai/gcpsim --pattern gcpsim-linux-x64 --pattern SHA256SUMS
+gh release download v0.2.0 --repo lmctl-ai/gcpsim --pattern gcpsim-linux-x64 --pattern SHA256SUMS
 grep ' gcpsim-linux-x64$' SHA256SUMS | sha256sum -c -
 chmod +x gcpsim-linux-x64
 ./gcpsim-linux-x64 serve

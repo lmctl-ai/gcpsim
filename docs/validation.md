@@ -94,3 +94,54 @@ when a binding allowed creation, and metadata in a later multipart part could
 misdirect the authorization check. The overlay now uses newline-aware globs and
 reads the first multipart metadata part, including upstream's absent/null-name
 query fallback. These cases are included in every JVM/native auth test run.
+
+## Wave 11 final implementation: v0.2.0
+
+Source commit `3efc4dd770d7f27d3fa45e742de226e765b046e2` passed the complete
+[main workflow](https://github.com/lmctl-ai/gcpsim/actions/runs/40995924220).
+
+| Platform | JVM CLI, lifecycle, gcloud, auth + lmgcp | Native CLI, lifecycle, gcloud, auth + lmgcp |
+| --- | --- | --- |
+| Linux x64 | PASS | PASS |
+| Linux ARM64 | PASS | PASS |
+| macOS x64 | PASS | PASS |
+| macOS ARM64 | PASS | PASS |
+| Windows x64 | PASS | PASS |
+
+The auth matrix passed on all five platforms, for both JVM and native builds:
+
+| Case | Result |
+| --- | --- |
+| Missing, malformed, and unknown bearer tokens on GCS/Pub/Sub | 401 UNAUTHENTICATED |
+| Configured token with an applicable allow statement/binding | Success |
+| Principal mismatch, unmatched resources, empty policies | 403 PERMISSION_DENIED |
+| Explicit Deny vs statement allow and upstream binding allow | Deny wins |
+| Wildcard actions/resources, including newline-containing object names | PASS |
+| First multipart metadata part and null-name query fallback | Correct resource enforced |
+| Pub/Sub create on containing project and cross-project denial | PASS |
+| Unsupported services/transports and IAM mutations in enforce mode | Rejected |
+| Malformed startup configuration | Exit 2; no token echo |
+| lmgcp authentication/permission failure | Exit 4, JSON APP_FAIL; no token leakage |
+| No policy section vs explicitly empty policy section | Auth-only allow vs default deny |
+
+Integration evidence: the pinned **lmgcp v0.1.9 release binary** created a bucket,
+uploaded `hello.txt` through the GCS SDK, and downloaded the exact
+`gcpsim-roundtrip` payload. It created a topic and subscription, published
+`gcpsim-message`, and pulled the same message. Independent simulator REST reads
+found the client-created object and topic. Every test owns a fresh emulator
+process, so the client's internal fake cannot satisfy those checks.
+
+The Linux ARM64 native binary also passed this suite locally with the downloaded,
+checksum-verified client. Its SHA-256 is
+`c5f131260e2f19d7f74f338680360be747e38f70f9c04b26fd023e246d756c15`.
+The macOS ARM64 cold native build took 30m38s; its native tests passed in 16s.
+See [auth configuration and limits](auth.md) for the finite REST mapping and
+deferred full-cloud IAM/OAuth behavior.
+
+Published [gcpsim v0.2.0](https://github.com/lmctl-ai/gcpsim/releases/tag/v0.2.0)
+on 2026-10-30 at 04:11:10 UTC. The [release workflow](https://github.com/lmctl-ai/gcpsim/actions/runs/40999994470)
+reused the exact native caches, reran the complete JVM/native suites on all five
+platforms, and published five binaries, both license files, both provenance locks,
+and `SHA256SUMS` (10 assets). A fresh download of the published Linux ARM64 binary
+and `client.lock.json` passed checksum verification and matched the tested local
+artifacts byte-for-byte. The binary reports `gcpsim 0.2.0 (floci-gcp 0.11.0)`.
