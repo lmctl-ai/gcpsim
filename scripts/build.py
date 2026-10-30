@@ -15,7 +15,7 @@ p = argparse.ArgumentParser()
 p.add_argument('--native', action='store_true')
 p.add_argument('--offline', action='store_true', help='require cached source and Maven dependencies')
 a = p.parse_args()
-lock = json.loads((ROOT / 'upstream.lock.json').read_text())
+lock = json.loads((ROOT / 'upstream.lock.json').read_text(encoding='utf-8'))
 archive = ROOT / '.cache/floci-gcp.tar.gz'
 if not archive.exists():
     if a.offline:
@@ -36,7 +36,7 @@ with tarfile.open(archive) as tar:
 for path in (ROOT / 'src').rglob('*.java'):
     dest = source / path.relative_to(ROOT)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(path.read_text().replace('@VERSION@', (ROOT / 'VERSION').read_text().strip())
+    dest.write_text(path.read_text(encoding='utf-8').replace('@VERSION@', (ROOT / 'VERSION').read_text(encoding='utf-8').strip())
                     .replace('@UPSTREAM@', lock['version']), encoding='utf-8')
 cmd = [shutil.which('mvn') or 'mvn', '-B', 'package', '-Dmaven.test.skip=true',
        '-Dquarkus.package.main-class=ai.lmctl.gcpsim.Main']

@@ -16,7 +16,7 @@ import urllib.request
 import uuid
 
 exe = Path(sys.argv[1]).resolve()
-command = [os.environ.get('JAVA', 'java'), '-jar', str(exe)] if exe.suffix == '.jar' else [str(exe)]
+command = [os.environ.get('JAVA', 'java'), '-Dfile.encoding=UTF-8', '-Dstdout.encoding=UTF-8', '-Dstderr.encoding=UTF-8', '-jar', str(exe)] if exe.suffix == '.jar' else [str(exe)]
 gcloud = shutil.which(os.environ.get('GCLOUD', 'gcloud'))
 if not gcloud:
     raise SystemExit('gcloud is required (tested with 543.0.0); no silent skip')
@@ -45,12 +45,12 @@ with tempfile.TemporaryDirectory(prefix='gcpsim-test-') as tmp:
         cmd = [gcloud, '--quiet'] + list(args)
         if json_output:
             cmd += ['--format=json']
-        r = subprocess.run(cmd, env=env, cwd=tmp, capture_output=True, text=True, timeout=60)
+        r = subprocess.run(cmd, env=env, cwd=tmp, capture_output=True, text=True, encoding='utf-8', timeout=60)
         assert r.returncode == 0, (cmd, r.stdout, r.stderr)
         return json.loads(r.stdout) if json_output and r.stdout.strip() else r.stdout
 
     log_path = tmp / 'server.log'
-    with log_path.open('w') as log:
+    with log_path.open('w', encoding='utf-8') as log:
         server = subprocess.Popen(command + ['serve', '--port', str(port)], cwd=tmp,
                                   env=env, stdout=log, stderr=log)
         try:
@@ -97,7 +97,7 @@ with tempfile.TemporaryDirectory(prefix='gcpsim-test-') as tmp:
             print('PASS: resource cleanup')
         except BaseException:
             log.flush()
-            print(log_path.read_text(), file=sys.stderr)
+            print(log_path.read_text(encoding='utf-8'), file=sys.stderr)
             raise
         finally:
             server.terminate()

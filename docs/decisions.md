@@ -25,3 +25,7 @@
   upstream's native configuration; Windows Docker data planes remain untested.
 - CI serializes each platform separately, so a Windows packaging fix can be
   tested while a different platform is still completing native compilation.
+- Overlay sources and captured CLI output use UTF-8 explicitly. Windows' default
+  code page otherwise corrupts the Java help string during overlay generation
+  and can fail when Python decodes native output. JVM test launches explicitly
+  select UTF-8 stdout/stderr as well.

@@ -11,7 +11,7 @@ import time
 import urllib.request
 
 exe = Path(sys.argv[1]).resolve()
-cmd = [os.environ.get('JAVA', 'java'), '-jar', str(exe)] if exe.suffix == '.jar' else [str(exe)]
+cmd = [os.environ.get('JAVA', 'java'), '-Dfile.encoding=UTF-8', '-Dstdout.encoding=UTF-8', '-Dstderr.encoding=UTF-8', '-jar', str(exe)] if exe.suffix == '.jar' else [str(exe)]
 env = {k: v for k, v in os.environ.items() if not k.startswith(('FLOCI_GCP_', 'QUARKUS_'))}
 with tempfile.TemporaryDirectory(prefix='gcpsim-lifecycle-') as tmp:
     tmp = Path(tmp)
@@ -26,7 +26,7 @@ with tempfile.TemporaryDirectory(prefix='gcpsim-lifecycle-') as tmp:
             return json.load(r)
 
     for iteration in range(2):
-        with (tmp / 'server.log').open('w') as log:
+        with (tmp / 'server.log').open('w', encoding='utf-8') as log:
             server = subprocess.Popen(cmd + ['start', '--port', str(port), '--data-dir', str(tmp / 'state')],
                                       cwd=tmp, env=env, stdout=log, stderr=log)
             try:
@@ -43,14 +43,14 @@ with tempfile.TemporaryDirectory(prefix='gcpsim-lifecycle-') as tmp:
                 if iteration == 0:
                     request('/storage/v1/b?project=gcpsim-local', {'name': 'gcpsim-durable'})
                     collision = subprocess.run(cmd + ['serve', '--port', str(port)], env=env, cwd=tmp,
-                                               capture_output=True, text=True, timeout=60)
+                                               capture_output=True, text=True, encoding='utf-8', timeout=60)
                     assert collision.returncode == 3, (collision.returncode, collision.stdout, collision.stderr)
                     assert json.loads(collision.stdout)['ok'] is False, collision.stdout
                     print('PASS: occupied port fails with exit 3 and JSON error')
                 assert request('/storage/v1/b/gcpsim-durable')['name'] == 'gcpsim-durable'
             except BaseException:
                 log.flush()
-                print((tmp / 'server.log').read_text(), file=sys.stderr)
+                print((tmp / 'server.log').read_text(encoding='utf-8'), file=sys.stderr)
                 raise
             finally:
                 server.terminate()
