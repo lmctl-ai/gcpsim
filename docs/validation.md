@@ -162,3 +162,11 @@ characters, opaque placeholders, and attempted JSON structure injection. Both
 BearerGuard and PermissionFilter use the helper; upstream response code is
 unchanged. CI runs the templates against JVM and native binaries on all five
 platforms, plus the focused renderer test after each JVM build.
+
+Wave 12 source commit `489645bc88a59555b0eb934243f5a9c74f46f754` passed the
+[complete five-platform CI run](https://github.com/lmctl-ai/gcpsim/actions/runs/41002590110):
+Linux x64/ARM64, macOS x64/ARM64, and Windows x64. Every platform passed JVM and
+native CLI, lifecycle, real gcloud, auth/client, and template tests. The freshly
+built CI Linux ARM64 artifact additionally passed open/enforce template tests
+locally with `~/lmctl-mono/bin/lmscript`. The existing v0.2.0 release and pinned
+lmgcp v0.1.9 release remain unchanged; Wave 12 ships on main.
