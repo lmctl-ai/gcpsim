@@ -17,6 +17,7 @@ public class Main {
                 gcpsim — local GCP emulator built on floci-gcp
                 Usage: gcpsim serve|start [--port 4588] [--host 127.0.0.1]
                              [--project gcpsim-local] [--data-dir PATH]
+                             [--auth open|enforce] [--auth-config PATH]
                        gcpsim --version | --help
                 Foreground server; stop with Ctrl-C. State is in memory unless --data-dir
                 is supplied. Persistent state uses upstream's persistent storage mode.
@@ -28,10 +29,12 @@ public class Main {
             if (!Set.of("serve", "start").contains(args[0]))
                 throw new IllegalArgumentException("expected serve or start");
             String host = "127.0.0.1", port = "4588", project = "gcpsim-local", data = null;
+            String auth = System.getenv().getOrDefault("SIM_AUTH", "open");
+            String authConfig = System.getenv("SIM_AUTH_CONFIG");
             var seen = new java.util.HashSet<String>();
             for (int i = 1; i < args.length; i += 2) {
                 String key = args[i];
-                if (!Set.of("--host", "--port", "--project", "--data-dir").contains(key))
+                if (!Set.of("--host", "--port", "--project", "--data-dir", "--auth", "--auth-config").contains(key))
                     throw new IllegalArgumentException("unknown option");
                 if (!seen.add(key) || i + 1 == args.length || args[i + 1].isBlank())
                     throw new IllegalArgumentException("options require one nonempty value and cannot repeat");
@@ -41,8 +44,11 @@ public class Main {
                     case "--port" -> port = value;
                     case "--project" -> project = value;
                     case "--data-dir" -> data = value;
+                    case "--auth" -> auth = value;
+                    case "--auth-config" -> authConfig = value;
                 }
             }
+            AuthConfig.load(auth, authConfig);
             int number = Integer.parseInt(port);
             if (number < 1 || number > 65535) throw new IllegalArgumentException("port must be 1..65535");
             if (!Set.of("127.0.0.1", "0.0.0.0").contains(host))

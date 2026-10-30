@@ -1,0 +1,14 @@
+p = _dsl_ cli="lmgcp";
+  let bucket = gcp.storage_create_bucket("lmgcp-integration", "US", "STANDARD");
+  let put = gcp.storage_put_object("lmgcp-integration", "hello.txt", "gcpsim-roundtrip", "text/plain");
+  let content = gcp.storage_read_object("lmgcp-integration", "hello.txt");
+  if (content != "gcpsim-roundtrip") { assert_close(0.0, 1.0, 0.0); }
+  let topic = gcp.pubsub_create_topic("lmgcp-integration");
+  let sub = gcp.pubsub_create_subscription("lmgcp-integration", "lmgcp-integration", 30, "");
+  let attrs = str_map();
+  let id = gcp.pubsub_publish("lmgcp-integration", "gcpsim-message", attrs);
+  let messages = gcp.pubsub_pull("lmgcp-integration", 1);
+  assert_close(float(messages.len()), 1.0, 0.0);
+  if (messages.at(0) != "gcpsim-message") { assert_close(0.0, 1.0, 0.0); }
+end _dsl_
+savedsl(p, "roundtrip.dslb");

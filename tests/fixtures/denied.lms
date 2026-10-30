@@ -1,0 +1,4 @@
+p = _dsl_ cli="lmgcp";
+  let bucket = gcp.storage_get_bucket("lmgcp-integration");
+end _dsl_
+savedsl(p, "denied.dslb");

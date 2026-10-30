@@ -118,3 +118,9 @@ gcloud pubsub subscriptions pull gcpsim-demo-sub --auto-ack
 These overrides are for the current shell. `*_EMULATOR_HOST` alone does not
 redirect gcloud. Our gcloud tests exercise REST; the upstream gRPC services
 remain available but are not independently certified by this test suite.
+
+## Authentication and permissions
+
+Open mode remains the default. Use `--auth enforce --auth-config auth.json` (or
+`SIM_AUTH=enforce` and `SIM_AUTH_CONFIG`) for dummy OAuth bearer validation and
+resource permissions. See [auth configuration, mapping, and limits](docs/auth.md).

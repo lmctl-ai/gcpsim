@@ -19,9 +19,9 @@ assert run(['--version']).strip() == f"gcpsim {(ROOT / 'VERSION').read_text(enco
 help_text = run(['--help'])
 assert '4588' in help_text and 'gcpsim — local GCP emulator' in help_text
 assert 'Usage:' in run([])
-for args in [['bogus'], ['serve', '--port'], ['serve', '--port', '0'],
+for args in [['serve', '--auth', 'bogus'], ['serve', '--auth', 'enforce'], ['bogus'], ['serve', '--port'], ['serve', '--port', '0'],
              ['serve', '--port', '65536'], ['serve', '--port', 'abc'],
              ['serve', '--host', 'example.com'], ['serve', '--unknown', 'x'],
              ['serve', '--project', 'invalid/project'], ['serve', '--port', '4588', '--port', '4589']]:
     assert json.loads(run(args, 2))['ok'] is False
-print('PASS: 12 CLI checks')
+print('PASS: 14 CLI checks')
