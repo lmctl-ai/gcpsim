@@ -5,6 +5,23 @@ packaged as one native executable. REST and gRPC share port **4588**. No GCP
 account, Java installation, or Docker is needed to run the native binary for
 GCS and Pub/Sub.
 
+## Install
+
+Download a binary and `SHA256SUMS` from the [releases](https://github.com/lmctl-ai/gcpsim/releases).
+For Linux x64:
+
+```sh
+gh release download v0.1.0 --repo lmctl-ai/gcpsim --pattern gcpsim-linux-x64 --pattern SHA256SUMS
+grep ' gcpsim-linux-x64$' SHA256SUMS | sha256sum -c -
+chmod +x gcpsim-linux-x64
+./gcpsim-linux-x64 serve
+```
+
+Other assets are `gcpsim-linux-arm64`, `gcpsim-macos-x64`,
+`gcpsim-macos-arm64`, and `gcpsim-windows-x64.exe`. You can rename the executable
+to `gcpsim` (`gcpsim.exe` on Windows). Binaries use GraalVM's default CPU targets:
+x86-64-v3 or ARMv8.1-A. No runtime JVM installation is required.
+
 ## Build and run
 
 Requires Python 3.12+, Maven 3.9+, and GraalVM JDK 25 with `native-image` on PATH.
@@ -29,7 +46,7 @@ curl http://127.0.0.1:4588/health
 ```
 
 Upstream configuration uses `FLOCI_GCP_*` environment variables. CLI host, port,
-and project take precedence. Docker-backed services default to mock mode;
+project, and the computed loopback base URL take precedence. Docker-backed services default to mock mode;
 set the corresponding upstream `FLOCI_GCP_SERVICES_<SERVICE>_MOCK=false` to
 opt into real containers. GCS and Pub/Sub run in process.
 
@@ -54,6 +71,8 @@ retain the real GCP wire format. Logs go to stderr.
 
 ## Test
 
+See the [five-platform validation record](docs/validation.md) for live test evidence.
+
 Install gcloud 543.0.0, then run:
 
 ```sh
@@ -73,8 +92,8 @@ Push and pull-request CI build and test Linux x64/arm64, macOS x64/arm64, and
 Windows x64. Tags `v*` publish binaries and SHA256SUMS only after all jobs pass. Native builds
 are cached by source, version, build script, platform, and toolchain fingerprint;
 every run tests the binary again, including cache hits.
-Native Linux builds target Ubuntu 22.04 (glibc); Windows requires the Visual C++
-runtime. Other upstream services and Docker-backed data planes are outside this
+Native Linux builds target Ubuntu 22.04 and require glibc and zlib; Windows
+requires the Visual C++ runtime. macOS binaries are not notarized. Other upstream services and Docker-backed data planes are outside this
 repository's current compatibility gate; no complete GCP fidelity is claimed.
 
 ## gcloud quickstart
