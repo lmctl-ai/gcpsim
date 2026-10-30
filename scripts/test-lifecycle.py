@@ -12,7 +12,7 @@ import urllib.request
 
 exe = Path(sys.argv[1]).resolve()
 cmd = [os.environ.get('JAVA', 'java'), '-Dfile.encoding=UTF-8', '-Dstdout.encoding=UTF-8', '-Dstderr.encoding=UTF-8', '-jar', str(exe)] if exe.suffix == '.jar' else [str(exe)]
-env = {k: v for k, v in os.environ.items() if not k.startswith(('FLOCI_GCP_', 'QUARKUS_'))}
+env = {k: v for k, v in os.environ.items() if not k.startswith(('SIM_AUTH', 'FLOCI_GCP_', 'QUARKUS_'))}
 with tempfile.TemporaryDirectory(prefix='gcpsim-lifecycle-') as tmp:
     tmp = Path(tmp)
     with socket.socket() as s:

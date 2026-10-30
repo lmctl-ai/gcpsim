@@ -55,7 +55,8 @@ interceptors are not used to validate configured dummy tokens.
 | GCS object get/update/delete | storage.objects.get/update/delete | projects/_/buckets/BUCKET/objects/OBJECT |
 | GCS media/multipart upload | storage.objects.create | projects/_/buckets/BUCKET/objects/OBJECT |
 | Pub/Sub topic/subscription list | pubsub.topics.list / pubsub.subscriptions.list | projects/PROJECT |
-| Pub/Sub topic/subscription create/get/delete | pubsub.topics.* / pubsub.subscriptions.* | projects/PROJECT/topics/NAME or subscriptions/NAME |
+| Pub/Sub topic/subscription create | pubsub.topics.create / pubsub.subscriptions.create | projects/PROJECT |
+| Pub/Sub topic/subscription get/delete | pubsub.topics.get/delete / pubsub.subscriptions.get/delete | projects/PROJECT/topics/NAME or subscriptions/NAME |
 | Publish | pubsub.topics.publish | projects/PROJECT/topics/NAME |
 | Pull/acknowledge/modifyAckDeadline | pubsub.subscriptions.consume | projects/PROJECT/subscriptions/NAME |
 | Subscription create (additional check) | pubsub.topics.attachSubscription | referenced topic |
@@ -88,3 +89,10 @@ References: [GCP API errors](https://cloud.google.com/apis/design/errors),
   configured tokens. Test process exit status as well as response bodies.
 - Native caching must include every overlay source file. Re-run auth and integration
   checks on cache hits before publishing.
+
+The operation table is deliberately smaller than Google's full permission model:
+for example, overwriting an existing object checks `storage.objects.create` and
+does not add Google's separate delete check. Fine-grained checks for secondary
+resources (other than subscription attachment), ACLs, and dynamic IAM mutations
+are deferred. Use object-specific Deny rules on `storage.objects.*` when testing
+an object that must remain immutable in this subset.

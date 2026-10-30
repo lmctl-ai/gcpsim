@@ -26,7 +26,7 @@ with socket.socket() as s:
 endpoint = f'http://127.0.0.1:{port}'
 with tempfile.TemporaryDirectory(prefix='gcpsim-test-') as tmp:
     tmp = Path(tmp)
-    env = {k: v for k, v in os.environ.items() if not k.startswith(('CLOUDSDK_', 'GOOGLE_', 'FLOCI_GCP_', 'QUARKUS_'))}
+    env = {k: v for k, v in os.environ.items() if not k.startswith(('SIM_AUTH', 'CLOUDSDK_', 'GOOGLE_', 'FLOCI_GCP_', 'QUARKUS_'))}
     env.update({
         'CLOUDSDK_CONFIG': str(tmp / 'gcloud'),
         'CLOUDSDK_CORE_PROJECT': 'gcpsim-local',

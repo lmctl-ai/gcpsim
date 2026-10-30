@@ -18,7 +18,7 @@ cmd = [os.environ.get('JAVA', 'java'), '-Dfile.encoding=UTF-8', '-jar', str(exe)
 env = {k: v for k, v in os.environ.items() if not k.startswith(('SIM_AUTH', 'FLOCI_GCP_', 'QUARKUS_', 'LMGCP_', 'GOOGLE_', 'CLOUDSDK_'))}
 TOKEN = 'dummy-private-token'
 PRINCIPAL = 'user:tester@example.com'
-allow = {'Effect': 'Allow', 'ActionGlob': '*', 'ResourceGlob': '*', 'Principal': PRINCIPAL}
+allow = {'Effect': 'Allow', 'ActionGlob': '*', 'ResourceGlob': 'projects/*', 'Principal': PRINCIPAL}
 with tempfile.TemporaryDirectory(prefix='gcpsim-auth-') as directory:
     tmp = Path(directory)
     for invalid in ({}, {'tokens': {TOKEN: PRINCIPAL}, 'Statement': [{'Effect': 'Permit'}]},
@@ -67,7 +67,8 @@ with tempfile.TemporaryDirectory(prefix='gcpsim-auth-') as directory:
             combined = result.stdout + result.stderr
             assert TOKEN not in combined and 'wrong-private-token' not in combined, combined
             if error:
-                assert result.returncode != 0 and str(error) in combined, (result.returncode, combined)
+                assert result.returncode == 4 and str(error) in combined, (result.returncode, combined)
+                assert json.loads(result.stdout)['code'] == 'APP_FAIL', result.stdout
             else:
                 assert result.returncode == 0, combined
         with (tmp / 'server.log').open('w', encoding='utf-8') as log:
@@ -100,9 +101,12 @@ with tempfile.TemporaryDirectory(prefix='gcpsim-auth-') as directory:
     def matrix(req, cli):
         for token in (None, 'wrong-private-token', '', 'Basic invalid', 'space token'):
             req('/storage/v1/b?project=gcpsim-local', token=token, status=401)
+            req('/v1/projects/gcpsim-local/topics', token=token, status=401)
+        req('/storage/v1/b?project=gcpsim-local', token='other-dummy-token', status=403)
         req('/storage/v1/b?project=gcpsim-local', 'POST', {'name': 'allowed-bucket'})
         req('/storage/v1/b/allowed-bucket')
         req('/storage/v1/b/allowed-bucket', 'DELETE', status=403)
+        req('/storage/v1/b/allowed-bucket')
         req('/v1/projects/gcpsim-local/topics/allowed-topic', 'PUT', {})
         req('/v1/projects/gcpsim-local/topics/allowed-topic:publish', 'POST', {'messages': [{'data': 'aGk='}]})
         req('/v1/projects/gcpsim-local/topics/allowed-topic', 'DELETE', status=403)
@@ -119,7 +123,7 @@ with tempfile.TemporaryDirectory(prefix='gcpsim-auth-') as directory:
             cli('denied.dslb', token=None, error=401)
             cli('denied.dslb', token='wrong-private-token', error=401)
             print('PASS: lmgcp binary -> GCS upload/download + Pub/Sub publish/pull; CLI 401 exit/no token leakage')
-    run({'tokens': {TOKEN: PRINCIPAL}, 'Statement': [
+    run({'tokens': {TOKEN: PRINCIPAL, 'other-dummy-token': 'user:other@example.com'}, 'Statement': [
         {'Effect': 'Deny', 'ActionGlob': '*.delete', 'ResourceGlob': '*'}, allow]}, matrix)
 
     def bindings(req, cli):
@@ -131,11 +135,12 @@ with tempfile.TemporaryDirectory(prefix='gcpsim-auth-') as directory:
         req('/v1/projects/gcpsim-local/topics/fixture-topic:publish', 'POST', {'messages': [{'data': 'aGk='}]})
         req('/v1/projects/gcpsim-local/topics/fixture-topic', status=403)
         req('/storage/v1/b/other-bucket', status=403)
+        req('/v1/projects/other-project/topics/fixture-topic', 'PUT', {}, status=403)
         if client:
             cli('denied.dslb', error=403)
         print('PASS: upstream bucket bindings, Pub/Sub publisher bindings, wildcard action/resource, default deny, client 403')
     run({'tokens': {TOKEN: PRINCIPAL}, 'Statement': [
-        {'Effect': 'Allow', 'ActionGlob': '*.create', 'ResourceGlob': 'projects/gcpsim-*'},
+        {'Effect': 'Allow', 'ActionGlob': '*.create', 'ResourceGlob': 'projects/gcpsim-local'},
         {'Effect': 'Deny', 'Action': 'storage.buckets.delete', 'ResourceGlob': '*'}],
         'policies': {'buckets/fixture-bucket': {'bindings': [{'role': 'roles/storage.admin', 'members': [PRINCIPAL]}]},
                      'projects/gcpsim-local/topics/fixture-topic': {'bindings': [{'role': 'roles/pubsub.publisher', 'members': [PRINCIPAL]}]}},

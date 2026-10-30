@@ -51,13 +51,15 @@ jobs:
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db
         with:
           version: '543.0.0'
+      - name: Download checksum-pinned lmgcp
+        run: python scripts/download-client.py
       - name: JVM build and real client tests
         run: |
           python scripts/build.py
           python scripts/test-cli.py dist/quarkus-app/quarkus-run.jar
           python scripts/test-lifecycle.py dist/quarkus-app/quarkus-run.jar
           python scripts/test-gcloud.py dist/quarkus-app/quarkus-run.jar
-          python scripts/test-auth.py dist/quarkus-app/quarkus-run.jar
+          python scripts/test-auth.py dist/quarkus-app/quarkus-run.jar 'dist/lmgcp${{ matrix.ext }}'
       - name: Fingerprint native toolchain
         id: toolchain
         run: |
@@ -80,7 +82,7 @@ jobs:
           python scripts/test-cli.py 'dist/gcpsim${{ matrix.ext }}'
           python scripts/test-lifecycle.py 'dist/gcpsim${{ matrix.ext }}'
           python scripts/test-gcloud.py 'dist/gcpsim${{ matrix.ext }}'
-          python scripts/test-auth.py 'dist/gcpsim${{ matrix.ext }}'
+          python scripts/test-auth.py 'dist/gcpsim${{ matrix.ext }}' 'dist/lmgcp${{ matrix.ext }}'
       - name: Package standalone binary
         run: |
           mkdir -p artifacts
@@ -113,4 +115,4 @@ jobs:
           test "$TAG" = "v$(cat VERSION)"
           cp LICENSE FLOCI-LICENSE upstream.lock.json artifacts/
           (cd artifacts && sha256sum * > SHA256SUMS)
-          gh release create "$TAG" artifacts/* --verify-tag --title "gcpsim $TAG" --notes 'Standalone GCP emulator built from pinned floci-gcp 0.11.0. GCS and Pub/Sub tested with gcloud on each published platform. See README for defaults and limits.'
+          gh release create "$TAG" artifacts/* --verify-tag --title "gcpsim $TAG" --notes 'Standalone GCP emulator built from pinned floci-gcp 0.11.0. GCS and Pub/Sub tested with pinned lmgcp and gcloud on each published platform; opt-in bearer authentication and resource permissions. See README for defaults and limits.'

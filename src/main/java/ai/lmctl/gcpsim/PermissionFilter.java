@@ -106,7 +106,8 @@ public class PermissionFilter implements ContainerRequestFilter {
                 resourceName = resourceName.substring(0, resourceName.indexOf(':'));
             } else { action = operation(method, "GET", "get", "PUT", "create", "DELETE", "delete"); }
             List<Check> checks = new ArrayList<>();
-            checks.add(new Check("pubsub." + kind + "." + action, IamResource.projectChild("pubsub.googleapis.com", kind.equals("topics") ? "Topic" : "Subscription", resourceName, resourceName)));
+            String checkedResource = action.equals("create") ? "projects/" + parts[1] : resourceName;
+            checks.add(new Check("pubsub." + kind + "." + action, IamResource.projectChild("pubsub.googleapis.com", kind.equals("topics") ? "Topic" : "Subscription", checkedResource, checkedResource)));
             if (kind.equals("subscriptions") && action.equals("create")) {
                 JsonNode request = json.readTree(body(ctx));
                 String topic = request.path("topic").asText();

@@ -55,3 +55,35 @@ restored the native caches and reran both test tiers on all five platforms befor
 publishing [v0.1.0](https://github.com/lmctl-ai/gcpsim/releases/tag/v0.1.0).
 The published Linux ARM64 executable was downloaded again, verified against the
 published `SHA256SUMS`, and executed successfully with `--version`.
+
+## Wave 11 JVM validation
+
+Local Java 25 validation passed CLI (14 cases), lifecycle/persistence/occupied
+port checks, and the existing gcloud GCS/Pub/Sub suite. The new auth suite passed:
+malformed startup fixtures; missing/wrong/malformed bearer credentials; statement
+allow and deny; explicit deny overriding statements and upstream IAM bindings;
+wildcard action/resource matching; empty policy default deny; auth-only mode;
+unsupported REST/gRPC transport rejection; and no token leakage.
+
+A source-built lmgcp from the Wave 11 client changes completed GCS bucket creation,
+SDK multipart upload, byte-exact download, topic/subscription creation, publish and
+pull against the gcpsim JVM process. Independent REST reads found the client-created
+object and topic. The CLI returned application failure for both 401 and 403.
+Release-binary and native validation will be recorded after CI completes.
+
+The final local client run used source-built lmgcp v0.1.9. Its full existing suite
+passed all 58 checks, including 40 numbered examples, account inventory/plotting,
+schema parity, memory limits, and comparison fixtures. The unnumbered inventory
+example had two pre-existing CI problems (CSV delimiter and cost-lab assumptions);
+these were corrected before the replacement release tag.
+
+The CI-built Linux ARM64 native artifact from run `40992492411` also passed the
+complete lmgcp integration and auth suite locally. CLI authentication and permission
+failures use exit **4** with JSON `APP_FAIL`; success uses exit 0.
+
+Pinned client release: [lmgcp v0.1.9](https://github.com/lmctl-ai/lmgcp/releases/tag/v0.1.9),
+source `db4f5193ce8258b2ef16e035743da9f7fc4816a6`. Its [release workflow](https://github.com/lmctl-ai/lmgcp/actions/runs/40992609393)
+passed all five platforms. Release SHA-256 values are committed in `client.lock.json`.
+A final vendor-table review corrected Pub/Sub create checks to use the containing
+project; the tests now require an exact project match and deny cross-project creation.
+The earlier gcpsim native run was canceled so the corrected source can be rebuilt.

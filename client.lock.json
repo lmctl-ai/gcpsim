@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/lmctl-ai/lmgcp",
+  "tag": "v0.1.9",
+  "commit": "db4f5193ce8258b2ef16e035743da9f7fc4816a6",
+  "sha256": {
+    "lmgcp-linux-arm64": "375ef57cb65c25e061aecf43598a0624bb49d4cea158aed953de7350041eeb99",
+    "lmgcp-linux-x64": "71957c68e4317c9b33eb63fd8ade5747101e48fe299cd4b97a68d3824085f712",
+    "lmgcp-macos-arm64": "94a1eacff1f46abc7ee3f7bc1cf1ae056f7f4518fc6a15e33dcadf3596bf3ed4",
+    "lmgcp-macos-x64": "1aeb00e454684b07a21fcbb352ed4bd1ebd661cb08ca0f4262873e1d1044d9c7",
+    "lmgcp-windows-x64.exe": "bce5a8c5cfffa4a54b11838b6f9ff41c362f64023056655631e634dcc04e47e6"
+  }
+}

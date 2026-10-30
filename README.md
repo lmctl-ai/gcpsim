@@ -124,3 +124,16 @@ remain available but are not independently certified by this test suite.
 Open mode remains the default. Use `--auth enforce --auth-config auth.json` (or
 `SIM_AUTH=enforce` and `SIM_AUTH_CONFIG`) for dummy OAuth bearer validation and
 resource permissions. See [auth configuration, mapping, and limits](docs/auth.md).
+
+The auth suite also runs real GCS and Pub/Sub operations through **lmgcp v0.1.9**.
+`client.lock.json` pins its source commit and all five release checksums. To run it:
+
+```
+python3 scripts/download-client.py
+python3 scripts/test-auth.py dist/gcpsim dist/lmgcp
+```
+
+On Windows use the `.exe` filenames. The same suite accepts
+`dist/quarkus-app/quarkus-run.jar` as its first argument for JVM testing. It owns
+and cleans up its emulator processes and checks CLI exits and token redaction.
+CI runs it against both JVM and native gcpsim on every published platform.
