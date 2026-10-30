@@ -145,3 +145,20 @@ platforms, and published five binaries, both license files, both provenance lock
 and `SHA256SUMS` (10 assets). A fresh download of the published Linux ARM64 binary
 and `client.lock.json` passed checksum verification and matched the tested local
 artifacts byte-for-byte. The binary reports `gcpsim 0.2.0 (floci-gcp 0.11.0)`.
+
+## Wave 12: JSON templates and response escaping
+
+The current mono engine and npm lmscript 0.2.444 both passed the template-driven
+JVM integration in open/enforce modes. The pinned v0.1.9 lmgcp client consumes
+JSON context through the isolated 0.2.420 v5 adapter; no global tool is modified.
+Independent REST reads verify status codes, bucket labels, object metadata and
+JSON contents, and Pub/Sub data/attributes. IAM bindings allow the round trip;
+explicit denies and missing credentials retain GCP 403/401 envelopes. The client
+retains APP_FAIL/exit 4 on denial. Existing JVM auth regressions pass unchanged.
+
+Owned error construction now uses a Java text block with each string encoded by
+Jackson before substitution. A focused test verifies quotes, Unicode, control
+characters, opaque placeholders, and attempted JSON structure injection. Both
+BearerGuard and PermissionFilter use the helper; upstream response code is
+unchanged. CI runs the templates against JVM and native binaries on all five
+platforms, plus the focused renderer test after each JVM build.

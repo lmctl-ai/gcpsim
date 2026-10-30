@@ -16,7 +16,6 @@ import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 
 /** Strict, finite HTTP operation mapping. Unknown operations fail closed in enforce mode. */
 @Provider
@@ -137,7 +136,7 @@ public class PermissionFilter implements ContainerRequestFilter {
         throw new IllegalArgumentException();
     }
     private static void reject(ContainerRequestContext ctx, int code, String status) {
-        ctx.abortWith(Response.status(code).type("application/json").entity(Map.of("error", Map.of("code", code, "status", status, "message", "Request is not permitted by the emulator auth configuration."))).build());
+        ctx.abortWith(Response.status(code).type("application/json").entity(ErrorJson.render(code, status, "Request is not permitted by the emulator auth configuration.")).build());
     }
     record Check(String action, IamResource resource) {}
 }

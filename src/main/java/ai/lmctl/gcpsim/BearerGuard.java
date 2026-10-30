@@ -38,6 +38,6 @@ public class BearerGuard {
     }
     private static void error(RoutingContext ctx, int code, String status, String message) {
         ctx.response().setStatusCode(code).putHeader("Content-Type", "application/json")
-                .end("{\"error\":{\"code\":" + code + ",\"status\":\"" + status + "\",\"message\":\"" + message + "\"}}");
+                .end(ErrorJson.render(code, status, message));
     }
 }

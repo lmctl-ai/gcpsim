@@ -1,0 +1,31 @@
+# Bytecode v5 adapter for released lmgcp v0.1.9. JSON is constructed only in
+# templates.lms on the current engine, then passed here as typed context.
+context = read_json("expected.json");
+create = context.create;
+object = context.object;
+pubsub = context.pubsub;
+body = json_stringify(object.content);
+if (ARGV[0] == "run") {
+  p = _dsl_ cli="lmgcp";
+    let bucket = gcp.storage_create_bucket(${create.name}, ${create.location}, ${create.storageClass});
+    if (bucket.name() != ${create.name}) { assert_close(0.0, 1.0, 0.0); }
+    let labels = str_map().set("wave", ${create.labels.wave});
+    let labeled = gcp.storage_set_bucket_labels(${create.name}, labels);
+    if (!labeled) { assert_close(0.0, 1.0, 0.0); }
+    let uploaded = gcp.storage_put_object(${create.name}, ${object.name}, ${body}, ${object.contentType});
+    if (!uploaded) { assert_close(0.0, 1.0, 0.0); }
+    let read = gcp.storage_read_object(${create.name}, ${object.name});
+    if (read != ${body}) { assert_close(0.0, 1.0, 0.0); }
+    let topic = gcp.pubsub_create_topic(${pubsub.topic});
+    let sub = gcp.pubsub_create_subscription(${pubsub.subscription}, ${pubsub.topic}, ${pubsub.ackDeadlineSeconds}, "");
+    let attrs = str_map().set("note", ${pubsub.attributes.note});
+    let id = gcp.pubsub_publish(${pubsub.topic}, ${pubsub.message}, attrs);
+    if (id == "") { assert_close(0.0, 1.0, 0.0); }
+end _dsl_
+  savedsl(p, "templates.dslb");
+} else if (ARGV[0] == "denied") {
+  p = _dsl_ cli="lmgcp";
+    let bucket = gcp.storage_get_bucket("lmgcp-denied");
+end _dsl_
+  savedsl(p, "templates.dslb");
+} else { assert(false, "expected run or denied"); }

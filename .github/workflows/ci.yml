@@ -53,13 +53,23 @@ jobs:
           version: '543.0.0'
       - name: Download checksum-pinned lmgcp
         run: python scripts/download-client.py
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+      - name: Install isolated template and client compilers
+        run: |
+          npm install --prefix .cache/templates @lmctl-ai/lmctl@0.2.444
+          npm install --prefix .cache/client-compiler @lmctl-ai/lmctl@0.2.420
+          python -c "import os,pathlib; r=pathlib.Path('.cache').resolve(); open(os.environ['GITHUB_ENV'],'a').write('LMSCRIPT_BIN='+str(r/'templates/node_modules/@lmctl-ai/lmctl/bin/lmscript')+'\nLMGCP_COMPILER='+str(r/'client-compiler/node_modules/@lmctl-ai/lmctl/bin/lmscript')+'\n')"
       - name: JVM build and real client tests
         run: |
           python scripts/build.py
+          python scripts/test-error-json.py
           python scripts/test-cli.py dist/quarkus-app/quarkus-run.jar
           python scripts/test-lifecycle.py dist/quarkus-app/quarkus-run.jar
           python scripts/test-gcloud.py dist/quarkus-app/quarkus-run.jar
           python scripts/test-auth.py dist/quarkus-app/quarkus-run.jar 'dist/lmgcp${{ matrix.ext }}'
+          python scripts/test-templates.py dist/quarkus-app/quarkus-run.jar 'dist/lmgcp${{ matrix.ext }}'
       - name: Fingerprint native toolchain
         id: toolchain
         run: |
@@ -83,6 +93,7 @@ jobs:
           python scripts/test-lifecycle.py 'dist/gcpsim${{ matrix.ext }}'
           python scripts/test-gcloud.py 'dist/gcpsim${{ matrix.ext }}'
           python scripts/test-auth.py 'dist/gcpsim${{ matrix.ext }}' 'dist/lmgcp${{ matrix.ext }}'
+          python scripts/test-templates.py 'dist/gcpsim${{ matrix.ext }}' 'dist/lmgcp${{ matrix.ext }}'
       - name: Package standalone binary
         run: |
           mkdir -p artifacts

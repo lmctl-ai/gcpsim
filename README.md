@@ -136,3 +136,7 @@ On Windows use the `.exe` filenames. The same suite accepts
 `dist/quarkus-app/quarkus-run.jar` as its first argument for JVM testing. It owns
 and cleans up its emulator processes and checks CLI exits and token redaction.
 CI runs it against both JVM and native gcpsim on every published platform.
+
+Template-driven GCS/Pub/Sub integration, generated IAM bindings, and both auth
+modes are demonstrated in [examples/templates.lms](examples/templates.lms).
+See [run instructions and compiler compatibility](examples/README.md).
