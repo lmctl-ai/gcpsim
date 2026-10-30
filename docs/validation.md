@@ -87,3 +87,10 @@ passed all five platforms. Release SHA-256 values are committed in `client.lock.
 A final vendor-table review corrected Pub/Sub create checks to use the containing
 project; the tests now require an exact project match and deny cross-project creation.
 The earlier gcpsim native run was canceled so the corrected source can be rebuilt.
+
+Additional authorization regressions reproduced failures in the earlier native
+artifact before fixes: an object name containing a newline bypassed wildcard Deny
+when a binding allowed creation, and metadata in a later multipart part could
+misdirect the authorization check. The overlay now uses newline-aware globs and
+reads the first multipart metadata part, including upstream's absent/null-name
+query fallback. These cases are included in every JVM/native auth test run.

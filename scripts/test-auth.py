@@ -46,7 +46,7 @@ with tempfile.TemporaryDirectory(prefix='gcpsim-auth-') as directory:
             headers = {'Content-Type': content_type}
             if token is not None:
                 headers['Authorization'] = token if token.startswith('Basic ') else 'Bearer ' + token
-            req = urllib.request.Request(endpoint + path, data=json.dumps(data).encode() if data is not None else None, headers=headers, method=method)
+            req = urllib.request.Request(endpoint + path, data=data if isinstance(data, bytes) else json.dumps(data).encode() if data is not None else None, headers=headers, method=method)
             try:
                 response = urllib.request.urlopen(req, timeout=10)
             except urllib.error.HTTPError as error:
@@ -105,6 +105,11 @@ with tempfile.TemporaryDirectory(prefix='gcpsim-auth-') as directory:
         req('/storage/v1/b?project=gcpsim-local', token='other-dummy-token', status=403)
         req('/storage/v1/b?project=gcpsim-local', 'POST', {'name': 'allowed-bucket'})
         req('/storage/v1/b/allowed-bucket')
+        req('/upload/storage/v1/b/allowed-bucket/o?uploadType=media&name=blocked%0Aobject', 'POST', b'x', status=403, content_type='text/plain')
+        multipart = b'--test-boundary\r\nContent-Type: text/plain\r\n\r\n{"name":"blocked-object"}\r\n--test-boundary\r\nContent-Type: application/json\r\n\r\n{"name":"allowed-object"}\r\n--test-boundary--\r\n'
+        req('/upload/storage/v1/b/allowed-bucket/o?uploadType=multipart', 'POST', multipart, status=403, content_type='multipart/related; boundary=test-boundary')
+        fallback = b'--test-boundary\r\nContent-Type: application/json\r\n\r\n{"name":null}\r\n--test-boundary\r\nContent-Type: text/plain\r\n\r\npayload\r\n--test-boundary--\r\n'
+        req('/upload/storage/v1/b/allowed-bucket/o?uploadType=multipart&name=blocked-null', 'POST', fallback, status=403, content_type='multipart/related; boundary=test-boundary')
         req('/storage/v1/b/allowed-bucket', 'DELETE', status=403)
         req('/storage/v1/b/allowed-bucket')
         req('/v1/projects/gcpsim-local/topics/allowed-topic', 'PUT', {})
@@ -114,7 +119,7 @@ with tempfile.TemporaryDirectory(prefix='gcpsim-auth-') as directory:
         req('/google.pubsub.v1.Publisher/ListTopics', 'POST', {}, status=403, content_type='application/grpc')
         req('/google.pubsub.v1.Publisher/ListTopics', 'POST', {}, token=None, status=401, content_type='application/grpc')
         req('/compute/v1/projects/gcpsim-local', status=403)
-        print('PASS: missing/wrong/malformed credentials; allow; explicit deny wins; unsupported transports fail closed')
+        print('PASS: credentials; allow/deny; newline and multipart resource identity; unsupported transports fail closed')
         if client:
             cli('roundtrip.dslb')
             # Independent simulator reads prove the client did not use its internal fake.
@@ -124,7 +129,9 @@ with tempfile.TemporaryDirectory(prefix='gcpsim-auth-') as directory:
             cli('denied.dslb', token='wrong-private-token', error=401)
             print('PASS: lmgcp binary -> GCS upload/download + Pub/Sub publish/pull; CLI 401 exit/no token leakage')
     run({'tokens': {TOKEN: PRINCIPAL, 'other-dummy-token': 'user:other@example.com'}, 'Statement': [
-        {'Effect': 'Deny', 'ActionGlob': '*.delete', 'ResourceGlob': '*'}, allow]}, matrix)
+        {'Effect': 'Deny', 'ActionGlob': '*.delete', 'ResourceGlob': '*'},
+        {'Effect': 'Deny', 'Action': 'storage.objects.create', 'ResourceGlob': '*blocked*'}, allow],
+        'policies': {'buckets/allowed-bucket': {'bindings': [{'role': 'roles/storage.objectAdmin', 'members': [PRINCIPAL]}]}}}, matrix)
 
     def bindings(req, cli):
         # Precedence: bucket/topic bindings grant read, wildcard statements bootstrap creation.

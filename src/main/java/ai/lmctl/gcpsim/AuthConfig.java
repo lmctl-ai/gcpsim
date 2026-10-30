@@ -88,7 +88,7 @@ public final class AuthConfig {
     private static Pattern glob(String value) {
         StringBuilder pattern = new StringBuilder("^");
         for (char c : value.toCharArray()) { pattern.append(c == '*' ? ".*" : c == '?' ? "." : Pattern.quote(String.valueOf(c))); }
-        return Pattern.compile(pattern.append('$').toString());
+        return Pattern.compile(pattern.append('$').toString(), Pattern.DOTALL);
     }
     record Rule(boolean deny, Pattern action, Pattern resource, Pattern principal) {
         boolean matches(String a, String r, String p) {

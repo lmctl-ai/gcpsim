@@ -113,6 +113,6 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           test "$TAG" = "v$(cat VERSION)"
-          cp LICENSE FLOCI-LICENSE upstream.lock.json artifacts/
+          cp LICENSE FLOCI-LICENSE upstream.lock.json client.lock.json artifacts/
           (cd artifacts && sha256sum * > SHA256SUMS)
           gh release create "$TAG" artifacts/* --verify-tag --title "gcpsim $TAG" --notes 'Standalone GCP emulator built from pinned floci-gcp 0.11.0. GCS and Pub/Sub tested with pinned lmgcp and gcloud on each published platform; opt-in bearer authentication and resource permissions. See README for defaults and limits.'

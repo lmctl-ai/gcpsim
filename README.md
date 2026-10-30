@@ -1,7 +1,7 @@
 # gcpsim
 
 A local GCP emulator built on [floci-gcp](https://github.com/floci-io/floci-gcp),
-packaged as one native executable. REST and gRPC share port **4588**. No GCP
+packaged as one native executable. In open mode, REST and gRPC share port **4588**. No GCP
 account, Java installation, or Docker is needed to run the native binary for
 GCS and Pub/Sub.
 
@@ -35,8 +35,7 @@ python3 scripts/build.py --native
 `start` is an alias for `serve`; both run in the foreground. Stop with Ctrl-C.
 Default binding is `127.0.0.1:4588`, project `gcpsim-local`, in-memory state.
 Use `--port 4590`, `--project my-project`, or `--data-dir ./data` for durable
-state. `--host 0.0.0.0` explicitly permits network access to this unauthenticated
-emulator. Each persistent instance needs its own directory.
+state. `--host 0.0.0.0` explicitly permits network access; authentication remains open unless enforcement is enabled. Each persistent instance needs its own directory.
 
 ```sh
 export GOOGLE_CLOUD_PROJECT=gcpsim-local
@@ -54,7 +53,7 @@ opt into real containers. GCS and Pub/Sub run in process.
 
 `upstream.lock.json` pins floci-gcp 0.11.0 by commit and source SHA256. Upstream
 publishes container images but no release binaries, so we build source with a
-small Java CLI overlay, without maintaining a fork or mirroring upstream.
+small Java CLI and auth overlay, without maintaining a fork or mirroring upstream.
 `FLOCI-LICENSE` preserves upstream's MIT notice. Our code is MIT licensed.
 
 `python3 scripts/build.py` builds a JVM distribution for faster iteration;

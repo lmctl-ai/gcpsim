@@ -40,7 +40,7 @@ With neither `Statement` nor `policies`, authenticated mapped operations are
 allowed. Presence of either, even empty, enables default deny. Any matching Deny
 wins over statements **and** bindings. Statements take scalar `Action` or
 `ActionGlob`, `ResourceGlob`, and optional `Principal`; `*` matches any sequence,
-`?` one character. These are emulator rules, not Google IAM deny-policy JSON.
+`?` one character, including newlines in object names. These are emulator rules, not Google IAM deny-policy JSON.
 Unknown fields, malformed rules and unsupported binding conditions fail startup.
 Unknown roles grant nothing. Bindings reuse upstream `IamPolicyEvaluator`, role
 catalog, member matching, and resource hierarchy; the overlay contributes Pub/Sub
@@ -68,7 +68,10 @@ the configured emulator project (single-project fixture model).
 Enforcement is an HTTP-boundary overlay; upstream source is not modified. Other
 services, IAM policy mutation, XML, resumable uploads, batch, and unmapped methods
 are rejected in enforce mode. Multipart requests are buffered to a 16 MiB limit
-for object-name authorization; media upload names come from the query. This is a
+for object-name authorization. The first metadata part supplies the name, with
+query-string fallback only for absent/null names, matching upstream behavior;
+media upload names come from the query. Multipart framing must use CRLF and begin
+with the declared boundary. This is a
 local testing subset: no JWT signature verification, ADC, token exchange, expiry,
 CEL conditions, Google organization hierarchy, ACL enforcement, or production
 OAuth security is claimed. Open mode retains upstream behavior.

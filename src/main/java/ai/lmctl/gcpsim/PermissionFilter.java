@@ -77,11 +77,19 @@ public class PermissionFilter implements ContainerRequestFilter {
                 String name = ctx.getUriInfo().getQueryParameters().getFirst("name");
                 if ("multipart".equals(upload)) {
                     String body = new String(body(ctx), StandardCharsets.UTF_8);
-                    int type = body.toLowerCase(java.util.Locale.ROOT).indexOf("content-type: application/json");
-                    int begin = body.indexOf("\r\n\r\n", type);
-                    int end = body.indexOf("\r\n--", begin + 4);
-                    if (type < 0 || begin < 0 || end < 0) { throw new IllegalArgumentException(); }
-                    name = json.readTree(body.substring(begin + 4, end)).path("name").asText();
+                    String boundary = ctx.getMediaType().getParameters().get("boundary");
+                    if (boundary == null || boundary.isBlank() || boundary.length() > 200
+                            || !body.startsWith("--" + boundary + "\r\n")) { throw new IllegalArgumentException(); }
+                    int begin = body.indexOf("\r\n\r\n");
+                    int end = body.indexOf("\r\n--" + boundary, begin + 4);
+                    if (begin < 0 || end < 0) { throw new IllegalArgumentException(); }
+                    JsonNode metadata = json.readTree(body.substring(begin + 4, end));
+                    if (!metadata.isObject()) { throw new IllegalArgumentException(); }
+                    JsonNode metadataName = metadata.get("name");
+                    if (metadataName != null && !metadataName.isNull()) {
+                        if (!metadataName.isTextual()) { throw new IllegalArgumentException(); }
+                        name = metadataName.asText();
+                    }
                 } else if (!"media".equals(upload)) { throw new IllegalArgumentException(); }
                 if (name == null || name.isBlank()) { throw new IllegalArgumentException(); }
                 return List.of(new Check("storage.objects.create", IamResource.gcsObject(bucket, name, project)));
