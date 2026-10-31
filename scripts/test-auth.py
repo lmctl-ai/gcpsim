@@ -63,7 +63,7 @@ with tempfile.TemporaryDirectory(prefix='gcpsim-auth-') as directory:
             ce = dict(env, LMGCP_ENDPOINT=endpoint, LMGCP_PROJECT='gcpsim-local')
             if token is not None:
                 ce['LMGCP_ACCESS_TOKEN'] = token
-            result = subprocess.run([str(client), '--dsl', str(ROOT / 'tests/fixtures' / fixture)], cwd=tmp, env=ce, capture_output=True, text=True, encoding='utf-8', timeout=90)
+            result = subprocess.run([str(client), '--lmcode', str(ROOT / 'tests/fixtures' / fixture)], cwd=tmp, env=ce, capture_output=True, text=True, encoding='utf-8', timeout=90)
             combined = result.stdout + result.stderr
             assert TOKEN not in combined and 'wrong-private-token' not in combined, combined
             if error:
