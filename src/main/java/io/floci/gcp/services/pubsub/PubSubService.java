@@ -1,0 +1,899 @@
+package io.floci.gcp.services.pubsub;
+
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.protobuf.ByteString;
+import com.google.protobuf.Timestamp;
+import com.google.protobuf.util.Timestamps;
+import com.google.pubsub.v1.PubsubMessage;
+import com.google.pubsub.v1.ReceivedMessage;
+import io.floci.gcp.config.EmulatorConfig;
+import io.floci.gcp.core.common.GcpException;
+import io.floci.gcp.core.common.ServiceDescriptor;
+import io.floci.gcp.core.common.ServiceProtocol;
+import io.floci.gcp.core.common.ServiceRegistry;
+import io.floci.gcp.core.storage.StorageBackend;
+import io.floci.gcp.core.storage.StorageFactory;
+import io.floci.gcp.lifecycle.GrpcServerManager;
+import io.floci.gcp.services.iam.IamService;
+import io.floci.gcp.services.pubsub.model.StoredMessage;
+import io.floci.gcp.services.pubsub.model.StoredSnapshot;
+import io.floci.gcp.services.pubsub.model.StoredSubscription;
+import io.floci.gcp.services.pubsub.model.StoredTopic;
+import io.quarkus.runtime.StartupEvent;
+import jakarta.annotation.PreDestroy;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.event.Observes;
+import jakarta.inject.Inject;
+import org.jboss.logging.Logger;
+
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.format.DateTimeParseException;
+import java.util.ArrayList;
+import java.util.Set;
+import java.util.Base64;
+import java.util.LinkedHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Optional;
+import java.util.Map;
+import java.util.Objects;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedDeque;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Predicate;
+
+@ApplicationScoped
+public class PubSubService {
+
+    private static final Logger LOG = Logger.getLogger(PubSubService.class);
+
+    private static final Predicate<Map<String, String>> NEVER_MATCHES = attributes -> false;
+
+    private final StorageBackend<String, StoredTopic> topicStore;
+    private final StorageBackend<String, StoredSubscription> subStore;
+    private final StorageBackend<String, StoredSnapshot> snapshotStore;
+
+    private final ConcurrentHashMap<String, ConcurrentLinkedDeque<StoredMessage>> queues = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, ConcurrentHashMap<String, StoredMessage>> delivered = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, CopyOnWriteArrayList<MessageListener>> listeners = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Predicate<Map<String, String>>> compiledFilters = new ConcurrentHashMap<>();
+    private final AtomicLong messageIdCounter = new AtomicLong(0);
+
+    private final ServiceRegistry serviceRegistry;
+    private final EmulatorConfig config;
+    private final GrpcServerManager grpcServerManager;
+    private final IamService iamService;
+    private final HttpClient httpClient;
+    private final ExecutorService pushDeliveryExecutor;
+    private final ScheduledExecutorService pushRetryExecutor;
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+
+    @Inject
+    jakarta.enterprise.inject.Instance<io.floci.gcp.services.eventarc.EventarcService> eventarcServiceInstance;
+
+    @Inject
+    public PubSubService(ServiceRegistry serviceRegistry, EmulatorConfig config,
+            StorageFactory storageFactory, GrpcServerManager grpcServerManager, IamService iamService) {
+        this.serviceRegistry = serviceRegistry;
+        this.config = config;
+        this.grpcServerManager = grpcServerManager;
+        this.iamService = iamService;
+        this.httpClient = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(10))
+                .build();
+        this.pushDeliveryExecutor = Executors.newCachedThreadPool();
+        this.pushRetryExecutor = Executors.newScheduledThreadPool(1);
+        this.topicStore = storageFactory.createGlobal("pubsub-topics", "pubsub-topics.json",
+                new TypeReference<Map<String, StoredTopic>>() {});
+        this.subStore = storageFactory.createGlobal("pubsub-subs", "pubsub-subs.json",
+                new TypeReference<Map<String, StoredSubscription>>() {});
+        this.snapshotStore = storageFactory.createGlobal("pubsub-snapshots", "pubsub-snapshots.json",
+                new TypeReference<Map<String, StoredSnapshot>>() {});
+    }
+
+    PubSubService(StorageBackend<String, StoredTopic> topicStore,
+            StorageBackend<String, StoredSubscription> subStore,
+            StorageBackend<String, StoredSnapshot> snapshotStore,
+            IamService iamService) {
+        this.topicStore = topicStore;
+        this.subStore = subStore;
+        this.snapshotStore = snapshotStore;
+        this.iamService = iamService;
+        this.httpClient = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(10))
+                .build();
+        this.pushDeliveryExecutor = Executors.newCachedThreadPool();
+        this.pushRetryExecutor = Executors.newScheduledThreadPool(1);
+        this.serviceRegistry = null;
+        this.config = null;
+        this.grpcServerManager = null;
+        registerPolicyResolvers();
+    }
+
+    @PreDestroy
+    void shutdownPushExecutors() {
+        pushRetryExecutor.shutdownNow();
+        pushDeliveryExecutor.shutdownNow();
+    }
+
+    void onStart(@Observes StartupEvent ev) {
+        serviceRegistry.register(ServiceDescriptor.builder("pubsub")
+                .enabled(config.services().pubsub().enabled())
+                .storageKey("pubsub")
+                .protocol(ServiceProtocol.GRPC)
+                .resourceClasses(PubSubPublisherController.class, PubSubSubscriberController.class,
+                        PubSubRestController.class)
+                .api("pubsub.googleapis.com", "Cloud Pub/Sub API")
+                .build());
+        grpcServerManager.bind(new PubSubPublisherController(this));
+        grpcServerManager.bind(new PubSubSubscriberController(this));
+        registerPolicyResolvers();
+    }
+
+    private void registerPolicyResolvers() {
+        iamService.registerPolicyResourceResolver("projects/*/topics/*", this::getTopic);
+        iamService.registerPolicyResourceResolver("projects/*/subscriptions/*", this::getSubscription);
+        iamService.registerPolicyResourceResolver("projects/*/snapshots/*", this::getSnapshot);
+    }
+
+    // ── Topics ─────────────────────────────────────────────────────────────────
+
+    public StoredTopic createTopic(String name) {
+        return createTopic(name, null, null);
+    }
+
+    public StoredTopic createTopic(String name, Map<String, String> labels, String messageRetentionDuration) {
+        LOG.infof("createTopic name=%s", name);
+        if (topicStore.get(name).isPresent()) {
+            LOG.warnf("createTopic failed: topic already exists name=%s", name);
+            throw GcpException.alreadyExists("Topic already exists: " + name);
+        }
+        StoredTopic topic = new StoredTopic(name);
+        topic.setLabels(emptyToNull(labels));
+        topic.setMessageRetentionDuration(blankToNull(messageRetentionDuration));
+        topicStore.put(name, topic);
+        return topic;
+    }
+
+    public StoredTopic getTopic(String name) {
+        LOG.debugf("getTopic name=%s", name);
+        return topicStore.get(name)
+                .orElseThrow(() -> GcpException.notFound("Topic not found: " + name));
+    }
+
+    public List<StoredTopic> listTopics(String project) {
+        LOG.debugf("listTopics project=%s", project);
+        String prefix = "projects/" + project + "/topics/";
+        List<StoredTopic> topics = topicStore.scan(k -> k.startsWith(prefix));
+        LOG.debugf("listTopics project=%s count=%d", project, topics.size());
+        return topics;
+    }
+
+    public StoredTopic updateTopic(String name, com.google.pubsub.v1.Topic topicProto,
+            com.google.protobuf.FieldMask updateMask) {
+        LOG.infof("updateTopic name=%s", name);
+        StoredTopic stored = getTopic(name);
+        for (String path : updateMask.getPathsList()) {
+            switch (path) {
+                case "labels" -> stored.setLabels(topicProto.getLabelsMap().isEmpty() ? null
+                        : new java.util.HashMap<>(topicProto.getLabelsMap()));
+                case "message_retention_duration" -> {
+                    if (topicProto.hasMessageRetentionDuration()) {
+                        stored.setMessageRetentionDuration(
+                                topicProto.getMessageRetentionDuration().getSeconds() + "s");
+                    }
+                }
+            }
+        }
+        topicStore.put(name, stored);
+        return stored;
+    }
+
+    public StoredTopic updateTopic(String name, Map<String, String> labels,
+            String messageRetentionDuration, List<String> updateMaskPaths) {
+        LOG.infof("updateTopic name=%s", name);
+        StoredTopic stored = getTopic(name);
+        boolean replaceAll = updateMaskPaths == null || updateMaskPaths.isEmpty();
+        if (replaceAll || masked(updateMaskPaths, "labels")) {
+            stored.setLabels(emptyToNull(labels));
+        }
+        if (replaceAll || masked(updateMaskPaths, "message_retention_duration")) {
+            stored.setMessageRetentionDuration(blankToNull(messageRetentionDuration));
+        }
+        topicStore.put(name, stored);
+        return stored;
+    }
+
+    public void deleteTopic(String name) {
+        LOG.infof("deleteTopic name=%s", name);
+        if (topicStore.get(name).isEmpty()) {
+            LOG.warnf("deleteTopic failed: topic not found name=%s", name);
+            throw GcpException.notFound("Topic not found: " + name);
+        }
+        iamService.deleteResourceAndPolicy(name, () -> topicStore.delete(name));
+    }
+
+    // ── Subscriptions ──────────────────────────────────────────────────────────
+
+    public StoredSubscription createSubscription(String name, String topicName, int ackDeadlineSeconds) {
+        return createSubscription(name, topicName, ackDeadlineSeconds, null);
+    }
+
+    public StoredSubscription createSubscription(String name, String topicName, int ackDeadlineSeconds,
+            String filter) {
+        return createSubscription(name, topicName, ackDeadlineSeconds, null, false, null,
+                filter, null, null, null, null, null, 0, false, false);
+    }
+
+    public StoredSubscription createSubscription(String name,
+            String topicName,
+            int ackDeadlineSeconds,
+            Map<String, String> labels,
+            boolean retainAckedMessages,
+            String messageRetentionDuration,
+            String filter,
+            String pushEndpoint,
+            Map<String, Object> bigQueryConfig,
+            Map<String, Object> expirationPolicy,
+            Map<String, Object> retryPolicy,
+            String deadLetterTopic,
+            int maxDeliveryAttempts,
+            boolean enableMessageOrdering,
+            boolean enableExactlyOnceDelivery) {
+        LOG.infof("createSubscription name=%s topic=%s ackDeadline=%d", name, topicName, ackDeadlineSeconds);
+        if (subStore.get(name).isPresent()) {
+            LOG.warnf("createSubscription failed: subscription already exists name=%s", name);
+            throw GcpException.alreadyExists("Subscription already exists: " + name);
+        }
+        if (topicStore.get(topicName).isEmpty()) {
+            LOG.warnf("createSubscription failed: topic not found topic=%s", topicName);
+            throw GcpException.notFound("Topic not found: " + topicName);
+        }
+        SubscriptionFilter.validate(filter);
+        int deadline = ackDeadlineSeconds > 0 ? ackDeadlineSeconds : 10;
+        StoredSubscription sub = new StoredSubscription(name, topicName, deadline);
+        sub.setLabels(emptyToNull(labels));
+        sub.setRetainAckedMessages(retainAckedMessages);
+        sub.setMessageRetentionDuration(blankToNull(messageRetentionDuration));
+        sub.setFilter(blankToNull(filter));
+        sub.setPushEndpoint(blankToNull(pushEndpoint));
+        sub.setBigQueryConfig(emptyObjectMapToNull(bigQueryConfig));
+        sub.setExpirationPolicy(emptyObjectMapToNull(expirationPolicy));
+        sub.setRetryPolicy(emptyObjectMapToNull(retryPolicy));
+        sub.setDeadLetterTopic(blankToNull(deadLetterTopic));
+        sub.setMaxDeliveryAttempts(maxDeliveryAttempts);
+        sub.setEnableMessageOrdering(enableMessageOrdering);
+        sub.setEnableExactlyOnceDelivery(enableExactlyOnceDelivery);
+        subStore.put(name, sub);
+        queues.put(name, new ConcurrentLinkedDeque<>());
+        delivered.put(name, new ConcurrentHashMap<>());
+        listeners.put(name, new CopyOnWriteArrayList<>());
+        return sub;
+    }
+
+    public StoredSubscription getSubscription(String name) {
+        LOG.debugf("getSubscription name=%s", name);
+        return subStore.get(name)
+                .orElseThrow(() -> GcpException.notFound("Subscription not found: " + name));
+    }
+
+    public List<StoredSubscription> listSubscriptions(String project) {
+        LOG.debugf("listSubscriptions project=%s", project);
+        String prefix = "projects/" + project + "/subscriptions/";
+        List<StoredSubscription> subs = subStore.scan(k -> k.startsWith(prefix));
+        LOG.debugf("listSubscriptions project=%s count=%d", project, subs.size());
+        return subs;
+    }
+
+    public StoredSubscription updateSubscription(com.google.pubsub.v1.Subscription subProto,
+            com.google.protobuf.FieldMask updateMask) {
+        LOG.infof("updateSubscription name=%s", subProto.getName());
+        StoredSubscription stored = getSubscription(subProto.getName());
+        if (updateMask.getPathsList().contains("filter")) {
+            throw filterNotMutable(stored.getName());
+        }
+        for (String path : updateMask.getPathsList()) {
+            switch (path) {
+                case "ack_deadline_seconds" -> stored.setAckDeadlineSeconds(subProto.getAckDeadlineSeconds());
+                case "labels" -> stored.setLabels(subProto.getLabelsMap().isEmpty() ? null
+                        : new java.util.HashMap<>(subProto.getLabelsMap()));
+                case "retain_acked_messages" -> stored.setRetainAckedMessages(subProto.getRetainAckedMessages());
+                case "message_retention_duration" -> {
+                    if (subProto.hasMessageRetentionDuration()) {
+                        stored.setMessageRetentionDuration(
+                                subProto.getMessageRetentionDuration().getSeconds() + "s");
+                    }
+                }
+                case "enable_message_ordering" -> stored.setEnableMessageOrdering(
+                        subProto.getEnableMessageOrdering());
+                case "enable_exactly_once_delivery" -> stored.setEnableExactlyOnceDelivery(
+                        subProto.getEnableExactlyOnceDelivery());
+                case "push_config" -> stored.setPushEndpoint(
+                        subProto.getPushConfig().getPushEndpoint().isEmpty() ? null
+                                : subProto.getPushConfig().getPushEndpoint());
+                case "dead_letter_policy" -> {
+                    if (subProto.hasDeadLetterPolicy()) {
+                        stored.setDeadLetterTopic(subProto.getDeadLetterPolicy().getDeadLetterTopic());
+                        stored.setMaxDeliveryAttempts(subProto.getDeadLetterPolicy().getMaxDeliveryAttempts());
+                    }
+                }
+            }
+        }
+        subStore.put(subProto.getName(), stored);
+        return stored;
+    }
+
+    public StoredSubscription updateSubscription(String name,
+            int ackDeadlineSeconds,
+            Map<String, String> labels,
+            Boolean retainAckedMessages,
+            String messageRetentionDuration,
+            String filter,
+            String pushEndpoint,
+            Map<String, Object> bigQueryConfig,
+            Map<String, Object> expirationPolicy,
+            Map<String, Object> retryPolicy,
+            String deadLetterTopic,
+            Integer maxDeliveryAttempts,
+            Boolean enableMessageOrdering,
+            Boolean enableExactlyOnceDelivery,
+            List<String> updateMaskPaths) {
+        LOG.infof("updateSubscription name=%s", name);
+        StoredSubscription stored = getSubscription(name);
+        boolean replaceAll = updateMaskPaths == null || updateMaskPaths.isEmpty();
+
+        if (filterChangeRequested(stored.getFilter(), filter, updateMaskPaths)) {
+            throw filterNotMutable(stored.getName());
+        }
+
+        if (replaceAll || masked(updateMaskPaths, "ack_deadline_seconds")) {
+            if (ackDeadlineSeconds > 0) {
+                stored.setAckDeadlineSeconds(ackDeadlineSeconds);
+            }
+        }
+        if (replaceAll || masked(updateMaskPaths, "labels")) {
+            stored.setLabels(emptyToNull(labels));
+        }
+        if (replaceAll || masked(updateMaskPaths, "retain_acked_messages")) {
+            if (retainAckedMessages != null) {
+                stored.setRetainAckedMessages(retainAckedMessages);
+            }
+        }
+        if (replaceAll || masked(updateMaskPaths, "message_retention_duration")) {
+            stored.setMessageRetentionDuration(blankToNull(messageRetentionDuration));
+        }
+        if (replaceAll || masked(updateMaskPaths, "push_config")) {
+            stored.setPushEndpoint(blankToNull(pushEndpoint));
+        }
+        if (replaceAll || masked(updateMaskPaths, "bigquery_config")) {
+            stored.setBigQueryConfig(emptyObjectMapToNull(bigQueryConfig));
+        }
+        if (replaceAll || masked(updateMaskPaths, "expiration_policy")) {
+            stored.setExpirationPolicy(emptyObjectMapToNull(expirationPolicy));
+        }
+        if (replaceAll || masked(updateMaskPaths, "retry_policy")) {
+            stored.setRetryPolicy(emptyObjectMapToNull(retryPolicy));
+        }
+        if (replaceAll || masked(updateMaskPaths, "dead_letter_policy")) {
+            stored.setDeadLetterTopic(blankToNull(deadLetterTopic));
+            stored.setMaxDeliveryAttempts(maxDeliveryAttempts == null ? 0 : maxDeliveryAttempts);
+        }
+        if (replaceAll || masked(updateMaskPaths, "enable_message_ordering")) {
+            if (enableMessageOrdering != null) {
+                stored.setEnableMessageOrdering(enableMessageOrdering);
+            }
+        }
+        if (replaceAll || masked(updateMaskPaths, "enable_exactly_once_delivery")) {
+            if (enableExactlyOnceDelivery != null) {
+                stored.setEnableExactlyOnceDelivery(enableExactlyOnceDelivery);
+            }
+        }
+
+        subStore.put(name, stored);
+        return stored;
+    }
+
+    public void modifyPushConfig(String subName, com.google.pubsub.v1.PushConfig pushConfig) {
+        LOG.infof("modifyPushConfig subscription=%s", subName);
+        StoredSubscription stored = getSubscription(subName);
+        stored.setPushEndpoint(pushConfig.getPushEndpoint().isEmpty() ? null : pushConfig.getPushEndpoint());
+        subStore.put(subName, stored);
+    }
+
+    public void deleteSubscription(String name) {
+        LOG.infof("deleteSubscription name=%s", name);
+        if (subStore.get(name).isEmpty()) {
+            LOG.warnf("deleteSubscription failed: subscription not found name=%s", name);
+            throw GcpException.notFound("Subscription not found: " + name);
+        }
+        iamService.deleteResourceAndPolicy(name, () -> subStore.delete(name));
+        queues.remove(name);
+        delivered.remove(name);
+        listeners.remove(name);
+    }
+
+    public void detachSubscription(String name) {
+        LOG.infof("detachSubscription name=%s", name);
+        StoredSubscription sub = subStore.get(name)
+                .orElseThrow(() -> GcpException.notFound("Subscription not found: " + name));
+        sub.setDetached(true);
+        subStore.put(name, sub);
+        queues.remove(name);
+        delivered.remove(name);
+        listeners.remove(name);
+    }
+
+    public List<String> listTopicSubscriptions(String topicName) {
+        LOG.debugf("listTopicSubscriptions topic=%s", topicName);
+        return subStore.scan(k -> true).stream()
+                .filter(sub -> topicName.equals(sub.getTopic()))
+                .map(StoredSubscription::getName)
+                .toList();
+    }
+
+    // ── Publish ────────────────────────────────────────────────────────────────
+
+    public List<String> publish(String topicName, List<PubsubMessage> messages) {
+        LOG.infof("publish topic=%s count=%d", topicName, messages.size());
+        if (topicStore.get(topicName).isEmpty()) {
+            LOG.warnf("publish failed: topic not found topic=%s", topicName);
+            throw GcpException.notFound("Topic not found: " + topicName);
+        }
+
+        List<String> messageIds = new ArrayList<>();
+        String now = Instant.now().toString();
+
+        for (PubsubMessage msg : messages) {
+            String messageId = String.valueOf(messageIdCounter.incrementAndGet());
+            messageIds.add(messageId);
+
+            StoredMessage stored = new StoredMessage();
+            stored.setMessageId(messageId);
+            stored.setData(msg.getData().toByteArray());
+            stored.setPublishTime(now);
+            stored.setOrderingKey(msg.getOrderingKey().isEmpty() ? null : msg.getOrderingKey());
+            if (!msg.getAttributesMap().isEmpty()) {
+                stored.setAttributes(msg.getAttributesMap());
+            }
+
+            Map<String, String> attributes = stored.getAttributes() == null
+                    ? Map.of() : stored.getAttributes();
+
+            int fanOut = 0;
+            for (String entry : subStore.keys()) {
+                StoredSubscription sub = subStore.get(entry).orElse(null);
+                if (sub != null && !sub.isDetached() && topicName.equals(sub.getTopic())
+                        && matchesFilter(sub, attributes)) {
+                    if (sub.getPushEndpoint() != null) {
+                        pushDeliveryExecutor.submit(() -> deliverPushMessage(sub, stored));
+                    } else {
+                        queues.computeIfAbsent(entry, k -> new ConcurrentLinkedDeque<>()).add(stored);
+                        notifyListeners(entry);
+                    }
+                    fanOut++;
+                }
+            }
+            LOG.debugf("publish messageId=%s topic=%s fanOut=%d", messageId, topicName, fanOut);
+            if (eventarcServiceInstance != null && eventarcServiceInstance.isResolvable()) {
+                try {
+                    eventarcServiceInstance.get().onPubSubPublish(topicName, stored);
+                } catch (Exception e) {
+                    LOG.warnf(e, "Eventarc publish dispatch failed for topic=%s messageId=%s", topicName, messageId);
+                }
+            }
+        }
+        return messageIds;
+    }
+
+    private void deliverPushMessage(StoredSubscription subscription, StoredMessage message) {
+        Map<String, Object> messageBody = new LinkedHashMap<>();
+        messageBody.put("data", Base64.getEncoder().encodeToString(message.getData()));
+        messageBody.put("attributes",
+                message.getAttributes() == null ? Map.of() : message.getAttributes());
+        messageBody.put("messageId", message.getMessageId());
+        messageBody.put("message_id", message.getMessageId());
+        messageBody.put("publishTime", message.getPublishTime());
+        messageBody.put("publish_time", message.getPublishTime());
+        if (message.getOrderingKey() != null) {
+            messageBody.put("orderingKey", message.getOrderingKey());
+        }
+
+        Map<String, Object> envelope = new LinkedHashMap<>();
+        envelope.put("message", messageBody);
+        envelope.put("subscription", subscription.getName());
+
+        try {
+            String body = OBJECT_MAPPER.writeValueAsString(envelope);
+
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(subscription.getPushEndpoint()))
+                    .timeout(Duration.ofSeconds(10))
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(body))
+                    .build();
+
+            HttpResponse<Void> response =
+                    httpClient.send(request, HttpResponse.BodyHandlers.discarding());
+
+            if (Set.of(102, 200, 201, 202, 204).contains(response.statusCode())) {
+                LOG.debugf("Push delivery succeeded subscription=%s messageId=%s status=%d",
+                        subscription.getName(), message.getMessageId(), response.statusCode());
+            } else {
+                LOG.warnf("Push delivery failed subscription=%s messageId=%s status=%d; retrying",
+                        subscription.getName(), message.getMessageId(), response.statusCode());
+                schedulePushRetry(subscription, message);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            LOG.debugf("Push delivery interrupted subscription=%s messageId=%s",
+                    subscription.getName(), message.getMessageId());
+        } catch (Exception e) {
+            LOG.warnf(e, "Push delivery failed subscription=%s messageId=%s; retrying",
+                    subscription.getName(), message.getMessageId());
+            schedulePushRetry(subscription, message);
+        }
+    }
+
+    private void schedulePushRetry(StoredSubscription subscription, StoredMessage message) {
+        pushRetryExecutor.schedule(() -> {
+            Optional<StoredSubscription> current = subStore.get(subscription.getName());
+
+            if (current.isEmpty()
+                    || !Objects.equals(current.get().getCreationId(), subscription.getCreationId())
+                    || current.get().isDetached()
+                    || current.get().getPushEndpoint() == null) {
+                return;
+            }
+
+            pushDeliveryExecutor.submit(
+                    () -> deliverPushMessage(current.get(), message));
+        }, 1, TimeUnit.SECONDS);
+    }
+
+    // A mask makes "filter" itself the trigger, as in GCP. Without a mask GCP rejects the request
+    // outright, so only a value that actually differs is treated as a change here.
+    private static boolean filterChangeRequested(String current, String requested,
+            List<String> updateMaskPaths) {
+        if (updateMaskPaths != null && !updateMaskPaths.isEmpty()) {
+            return masked(updateMaskPaths, "filter");
+        }
+        return requested != null && !Objects.equals(blankToNull(requested), current);
+    }
+
+    private static GcpException filterNotMutable(String name) {
+        LOG.warnf("updateSubscription rejected: filter is not mutable name=%s", name);
+        return GcpException.invalidArgument("Invalid update_mask provided in the "
+                + "UpdateSubscriptionRequest: the 'filter' field in the Subscription is not mutable.");
+    }
+
+    private boolean matchesFilter(StoredSubscription sub, Map<String, String> attributes) {
+        String filter = sub.getFilter();
+        if (filter == null || filter.isBlank()) {
+            return true;
+        }
+        return compiledFilters.computeIfAbsent(filter, PubSubService::compileFilter).test(attributes);
+    }
+
+    private static Predicate<Map<String, String>> compileFilter(String filter) {
+        try {
+            return SubscriptionFilter.parse(filter);
+        } catch (GcpException e) {
+            LOG.warnf("unparseable subscription filter, no message will match it filter=%s error=%s",
+                    filter, e.getMessage());
+            return NEVER_MATCHES;
+        }
+    }
+
+    // ── Pull ───────────────────────────────────────────────────────────────────
+
+    public List<ReceivedMessage> pull(String subName, int maxMessages) {
+        LOG.debugf("pull subscription=%s maxMessages=%d", subName, maxMessages);
+        if (subStore.get(subName).isEmpty()) {
+            LOG.warnf("pull failed: subscription not found name=%s", subName);
+            throw GcpException.notFound("Subscription not found: " + subName);
+        }
+
+        ConcurrentLinkedDeque<StoredMessage> queue = queues.computeIfAbsent(subName, k -> new ConcurrentLinkedDeque<>());
+        ConcurrentHashMap<String, StoredMessage> deliveredMap = delivered.computeIfAbsent(subName, k -> new ConcurrentHashMap<>());
+
+        List<ReceivedMessage> result = new ArrayList<>();
+        int count = 0;
+        while (count < maxMessages) {
+            StoredMessage msg = queue.poll();
+            if (msg == null) break;
+
+            String ackId = UUID.randomUUID().toString();
+            deliveredMap.put(ackId, msg);
+
+            PubsubMessage.Builder msgBuilder = PubsubMessage.newBuilder()
+                    .setMessageId(msg.getMessageId())
+                    .setData(msg.getData() != null ? ByteString.copyFrom(msg.getData()) : ByteString.EMPTY)
+                    .setPublishTime(parseTimestamp(msg.getPublishTime()));
+
+            if (msg.getAttributes() != null) {
+                msgBuilder.putAllAttributes(msg.getAttributes());
+            }
+            if (msg.getOrderingKey() != null) {
+                msgBuilder.setOrderingKey(msg.getOrderingKey());
+            }
+
+            result.add(ReceivedMessage.newBuilder()
+                    .setAckId(ackId)
+                    .setMessage(msgBuilder.build())
+                    .build());
+            count++;
+        }
+        LOG.debugf("pull subscription=%s returned=%d", subName, result.size());
+        return result;
+    }
+
+    // ── Acknowledge ────────────────────────────────────────────────────────────
+
+    public void modifyAckDeadline(String subName, List<String> ackIds, int ackDeadlineSeconds) {
+        LOG.debugf("modifyAckDeadline subscription=%s ackIds=%d deadline=%d",
+                subName, ackIds.size(), ackDeadlineSeconds);
+        if (subStore.get(subName).isEmpty()) {
+            throw GcpException.notFound("Subscription not found: " + subName);
+        }
+        if (!(ackDeadlineSeconds == 0 || (ackDeadlineSeconds >= 10 && ackDeadlineSeconds <= 600))) {
+            throw GcpException.invalidArgument("ackDeadlineSeconds must be 0 or 10..600");
+        }
+        ConcurrentHashMap<String, StoredMessage> deliveredMap = delivered.get(subName);
+        if (deliveredMap == null) {
+            throw GcpException.invalidArgument("Invalid ack ID");
+        }
+        for (String ackId : ackIds) {
+            StoredMessage message = deliveredMap.get(ackId);
+            if (message == null) {
+                throw GcpException.invalidArgument("Invalid ack ID");
+            }
+            if (ackDeadlineSeconds == 0) {
+                deliveredMap.remove(ackId);
+                queues.computeIfAbsent(subName, k -> new ConcurrentLinkedDeque<>()).addLast(message);
+            }
+        }
+    }
+
+    public void acknowledge(String subName, List<String> ackIds) {
+        LOG.debugf("acknowledge subscription=%s ackIds=%d", subName, ackIds.size());
+        ConcurrentHashMap<String, StoredMessage> deliveredMap = delivered.get(subName);
+        if (deliveredMap == null) {
+            LOG.warnf("acknowledge: no delivered map for subscription=%s", subName);
+            return;
+        }
+        for (String ackId : ackIds) {
+            deliveredMap.remove(ackId);
+        }
+    }
+
+    Runnable registerMessageListener(String subName, MessageListener listener) {
+        getSubscription(subName);
+        CopyOnWriteArrayList<MessageListener> subscriptionListeners =
+                listeners.computeIfAbsent(subName, k -> new CopyOnWriteArrayList<>());
+        subscriptionListeners.add(listener);
+        return () -> subscriptionListeners.remove(listener);
+    }
+
+    private void notifyListeners(String subName) {
+        CopyOnWriteArrayList<MessageListener> subscriptionListeners = listeners.get(subName);
+        if (subscriptionListeners == null) {
+            return;
+        }
+        for (MessageListener listener : subscriptionListeners) {
+            try {
+                listener.onMessagesAvailable();
+            } catch (Exception e) {
+                LOG.warnf("message listener failed for subscription=%s: %s", subName, e.getMessage());
+            }
+        }
+    }
+
+    @FunctionalInterface
+    interface MessageListener {
+        void onMessagesAvailable();
+    }
+
+    // ── Snapshots ──────────────────────────────────────────────────────────────
+
+    public StoredSnapshot createSnapshot(String snapshotName, String subscriptionName,
+            Map<String, String> labels) {
+        LOG.infof("createSnapshot name=%s subscription=%s", snapshotName, subscriptionName);
+        if (snapshotStore.get(snapshotName).isPresent()) {
+            throw GcpException.alreadyExists("Snapshot already exists: " + snapshotName);
+        }
+        StoredSubscription sub = getSubscription(subscriptionName);
+        String expireTime = Instant.now().plus(7, java.time.temporal.ChronoUnit.DAYS).toString();
+        StoredSnapshot snapshot = new StoredSnapshot(snapshotName, sub.getTopic(), expireTime);
+        if (labels != null && !labels.isEmpty()) {
+            snapshot.setLabels(labels);
+        }
+        snapshotStore.put(snapshotName, snapshot);
+        return snapshot;
+    }
+
+    public StoredSnapshot getSnapshot(String snapshotName) {
+        LOG.debugf("getSnapshot name=%s", snapshotName);
+        return snapshotStore.get(snapshotName)
+                .orElseThrow(() -> GcpException.notFound("Snapshot not found: " + snapshotName));
+    }
+
+    public List<StoredSnapshot> listSnapshots(String project) {
+        LOG.debugf("listSnapshots project=%s", project);
+        String prefix = "projects/" + project + "/snapshots/";
+        return snapshotStore.scan(k -> k.startsWith(prefix));
+    }
+
+    public StoredSnapshot updateSnapshot(String snapshotName, Map<String, String> labels,
+            String expireTime, List<String> updateMaskPaths) {
+        LOG.infof("updateSnapshot name=%s", snapshotName);
+        StoredSnapshot stored = getSnapshot(snapshotName);
+        for (String path : updateMaskPaths) {
+            switch (path) {
+                case "labels" -> stored.setLabels(labels);
+                case "expire_time" -> { if (expireTime != null) stored.setExpireTime(expireTime); }
+            }
+        }
+        snapshotStore.put(snapshotName, stored);
+        return stored;
+    }
+
+    public void deleteSnapshot(String snapshotName) {
+        LOG.infof("deleteSnapshot name=%s", snapshotName);
+        snapshotStore.get(snapshotName)
+                .orElseThrow(() -> GcpException.notFound("Snapshot not found: " + snapshotName));
+        iamService.deleteResourceAndPolicy(snapshotName, () -> snapshotStore.delete(snapshotName));
+    }
+
+    public void seek(String subscriptionName, String snapshotName, Timestamp time) {
+        LOG.infof("seek subscription=%s snapshot=%s time=%s", subscriptionName, snapshotName, describe(time));
+        getSubscription(subscriptionName);
+        if (snapshotName != null) {
+            getSnapshot(snapshotName);
+        }
+        // Validate before touching either collection, so a bad time can't strand in-flight messages.
+        Instant cutoff = null;
+        if (time != null) {
+            if (!Timestamps.isValid(time)) {
+                throw GcpException.invalidArgument("Invalid seek time: " + describe(time));
+            }
+            cutoff = Instant.ofEpochSecond(time.getSeconds(), time.getNanos());
+        }
+        ConcurrentHashMap<String, StoredMessage> deliveredMap = delivered.get(subscriptionName);
+        if (cutoff == null) {
+            // Clear delivered to simulate seeking back to snapshot position
+            if (deliveredMap != null) {
+                deliveredMap.clear();
+            }
+            return;
+        }
+        // Seek to a time: messages published before it count as acknowledged and are dropped,
+        // messages published at or after it become unacknowledged again, including in-flight ones.
+        ConcurrentLinkedDeque<StoredMessage> queue =
+                queues.computeIfAbsent(subscriptionName, k -> new ConcurrentLinkedDeque<>());
+        Instant seekTime = cutoff;
+        queue.removeIf(msg -> isBefore(msg.getPublishTime(), seekTime));
+        if (deliveredMap != null) {
+            List<StoredMessage> requeued = new ArrayList<>();
+            for (String ackId : List.copyOf(deliveredMap.keySet())) {
+                StoredMessage msg = deliveredMap.remove(ackId);
+                if (msg != null && !isBefore(msg.getPublishTime(), seekTime)) {
+                    requeued.add(msg);
+                }
+            }
+            // deliveredMap iterates in ack id hash order; put redelivered messages back in publish order.
+            requeued.sort(PUBLISH_ORDER);
+            for (int i = requeued.size() - 1; i >= 0; i--) {
+                queue.addFirst(requeued.get(i));
+            }
+        }
+        if (!queue.isEmpty()) {
+            notifyListeners(subscriptionName);
+        }
+    }
+
+    private static final Comparator<StoredMessage> PUBLISH_ORDER = Comparator
+            .comparing((StoredMessage m) -> publishInstant(m.getPublishTime()))
+            .thenComparingLong(m -> messageIdOrder(m.getMessageId()));
+
+    private static Instant publishInstant(String publishTime) {
+        if (publishTime == null) {
+            return Instant.MAX;
+        }
+        try {
+            return Instant.parse(publishTime);
+        } catch (DateTimeParseException e) {
+            return Instant.MAX;
+        }
+    }
+
+    private static long messageIdOrder(String messageId) {
+        try {
+            return Long.parseLong(messageId);
+        } catch (NumberFormatException e) {
+            // Ids come from messageIdCounter, so this only orders corrupt state; sort it last.
+            return Long.MAX_VALUE;
+        }
+    }
+
+    private static String describe(Timestamp time) {
+        return time == null ? "none" : "seconds=" + time.getSeconds() + " nanos=" + time.getNanos();
+    }
+
+    private static boolean isBefore(String publishTime, Instant time) {
+        if (publishTime == null) {
+            return false;
+        }
+        try {
+            return Instant.parse(publishTime).isBefore(time);
+        } catch (DateTimeParseException e) {
+            // publish() always stores Instant.toString(), so this only happens with corrupt state.
+            // Keeping the message is the safe side: a seek must never lose data it can't date.
+            LOG.warnf("seek: cannot parse publishTime=%s, keeping message: %s", publishTime, e.getMessage());
+            return false;
+        }
+    }
+
+    // ── Helpers ────────────────────────────────────────────────────────────────
+
+    private static Timestamp parseTimestamp(String isoTime) {
+        if (isoTime == null) return Timestamp.getDefaultInstance();
+        try {
+            Instant instant = Instant.parse(isoTime);
+            return Timestamp.newBuilder()
+                    .setSeconds(instant.getEpochSecond())
+                    .setNanos(instant.getNano())
+                    .build();
+        } catch (Exception e) {
+            return Timestamp.getDefaultInstance();
+        }
+    }
+
+    private static String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value;
+    }
+
+    private static Map<String, String> emptyToNull(Map<String, String> value) {
+        if (value == null || value.isEmpty()) {
+            return null;
+        }
+        return new LinkedHashMap<>(value);
+    }
+
+    private static Map<String, Object> emptyObjectMapToNull(Map<String, Object> value) {
+        if (value == null || value.isEmpty()) {
+            return null;
+        }
+        return new LinkedHashMap<>(value);
+    }
+
+    private static boolean masked(List<String> updateMaskPaths, String path) {
+        return updateMaskPaths.stream()
+                .map(PubSubService::jsonMaskToProtoMask)
+                .anyMatch(mask -> mask.equals(path) || mask.startsWith(path + "."));
+    }
+
+    private static String jsonMaskToProtoMask(String path) {
+        StringBuilder out = new StringBuilder();
+        for (int i = 0; i < path.length(); i++) {
+            char c = path.charAt(i);
+            if (Character.isUpperCase(c)) {
+                out.append('_').append(Character.toLowerCase(c));
+            } else {
+                out.append(c);
+            }
+        }
+        return out.toString();
+    }
+}
