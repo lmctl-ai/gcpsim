@@ -1,3 +1,5 @@
+/* modified from floci-gcp 0.11.0 0fa563c603c1876a09b050ffdce0d96bac00fedc
+   See durable-memory/ack-deadline-overlay.md and overlay.lock.json. */
 package io.floci.gcp.services.pubsub;
 
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -652,14 +654,19 @@ public class PubSubService {
         }
         ConcurrentHashMap<String, StoredMessage> deliveredMap = delivered.get(subName);
         if (deliveredMap == null) {
-            throw GcpException.invalidArgument("Invalid ack ID");
+            return;
+        }
+        // Validate the whole request first, then apply. Stale/already-acked
+        // well-formed ids are accepted (upstream acknowledge is idempotent);
+        // only malformed ids are rejected by the REST controller.
+        for (String ackId : ackIds) {
+            if (ackId == null || ackId.isBlank()) {
+                throw GcpException.invalidArgument("Invalid ack ID");
+            }
         }
         for (String ackId : ackIds) {
             StoredMessage message = deliveredMap.get(ackId);
-            if (message == null) {
-                throw GcpException.invalidArgument("Invalid ack ID");
-            }
-            if (ackDeadlineSeconds == 0) {
+            if (message != null && ackDeadlineSeconds == 0) {
                 deliveredMap.remove(ackId);
                 queues.computeIfAbsent(subName, k -> new ConcurrentLinkedDeque<>()).addLast(message);
             }

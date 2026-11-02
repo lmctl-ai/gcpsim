@@ -69,6 +69,7 @@ jobs:
           python scripts/test-lifecycle.py dist/quarkus-app/quarkus-run.jar
           python scripts/test-gcloud.py dist/quarkus-app/quarkus-run.jar
           python scripts/test-auth.py dist/quarkus-app/quarkus-run.jar 'dist/lmgcp${{ matrix.ext }}'
+          python scripts/test-pubsub-ack.py dist/quarkus-app/quarkus-run.jar
           python scripts/test-templates.py dist/quarkus-app/quarkus-run.jar 'dist/lmgcp${{ matrix.ext }}'
       - name: Fingerprint native toolchain
         id: toolchain
@@ -93,6 +94,7 @@ jobs:
           python scripts/test-lifecycle.py 'dist/gcpsim${{ matrix.ext }}'
           python scripts/test-gcloud.py 'dist/gcpsim${{ matrix.ext }}'
           python scripts/test-auth.py 'dist/gcpsim${{ matrix.ext }}' 'dist/lmgcp${{ matrix.ext }}'
+          python scripts/test-pubsub-ack.py 'dist/gcpsim${{ matrix.ext }}'
           python scripts/test-templates.py 'dist/gcpsim${{ matrix.ext }}' 'dist/lmgcp${{ matrix.ext }}'
       - name: Package standalone binary
         run: |

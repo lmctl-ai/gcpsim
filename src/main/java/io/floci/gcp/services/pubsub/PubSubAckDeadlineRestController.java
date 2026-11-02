@@ -47,7 +47,12 @@ public class PubSubAckDeadlineRestController {
         if (!(rawSeconds instanceof Number number)) {
             throw GcpException.invalidArgument("ackDeadlineSeconds must be an integer");
         }
-        int seconds = number.intValue();
+        double value = number.doubleValue();
+        long integral = number.longValue();
+        if (!Double.isFinite(value) || value != (double) integral || integral < Integer.MIN_VALUE || integral > Integer.MAX_VALUE) {
+            throw GcpException.invalidArgument("ackDeadlineSeconds must be an integer");
+        }
+        int seconds = (int) integral;
         if (seconds < 0 || seconds > 600) {
             throw GcpException.invalidArgument("ackDeadlineSeconds must be 0..600");
         }

@@ -1,0 +1,7 @@
+{
+  "upstream": "0.11.0 0fa563c603c1876a09b050ffdce0d96bac00fedc",
+  "overlays": {
+    "io/floci/gcp/services/pubsub/PubSubService.java": "e27611226b871ce8247c8901ff2db84ae739cf3f4c73b8a980a192ef19a12902",
+    "io/floci/gcp/services/pubsub/PubSubSubscriberController.java": "87cb4395bcc7037d5388079ff7f73ece5590c95d06f23e5dddf690ae5ec6ea09"
+  }
+}

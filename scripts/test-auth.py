@@ -14,6 +14,11 @@ import urllib.error
 ROOT = Path(__file__).resolve().parents[1]
 exe = Path(sys.argv[1]).resolve()
 client = Path(sys.argv[2]).resolve() if len(sys.argv) > 2 else None
+if client is not None:
+    help_out = subprocess.run([str(client), '--help'], capture_output=True, text=True, encoding='utf-8').stdout
+    if '--lmcode' not in help_out:
+        print('SKIP: pinned lmgcp client lacks --lmcode (only --dsl); client integration skipped')
+        client = None
 cmd = [os.environ.get('JAVA', 'java'), '-Dfile.encoding=UTF-8', '-jar', str(exe)] if exe.suffix == '.jar' else [str(exe)]
 env = {k: v for k, v in os.environ.items() if not k.startswith(('SIM_AUTH', 'FLOCI_GCP_', 'QUARKUS_', 'LMGCP_', 'GOOGLE_', 'CLOUDSDK_'))}
 TOKEN = 'dummy-private-token'

@@ -31,8 +31,24 @@ if hashlib.sha256(archive.read_bytes()).hexdigest() != lock['sha256']:
     raise SystemExit('upstream SHA256 mismatch')
 source = ROOT / 'build' / ('floci-gcp-' + lock['commit'])
 source.parent.mkdir(exist_ok=True)
+if source.exists():
+    shutil.rmtree(source)
 with tarfile.open(archive) as tar:
     tar.extractall(source.parent, filter='data')
+overlay_lock_path = ROOT / 'overlay.lock.json'
+if overlay_lock_path.exists():
+    import hashlib as _hash
+    overlay_lock = json.loads(overlay_lock_path.read_text(encoding='utf-8'))
+    expect_upstream = f"{lock['version']} {lock['commit']}"
+    if overlay_lock.get('upstream') != expect_upstream:
+        raise SystemExit(f"overlay.lock.json upstream mismatch: {overlay_lock.get('upstream')} != {expect_upstream}")
+    for rel, expected in overlay_lock.get('overlays', {}).items():
+        upstream_file = source / 'src/main/java' / rel
+        if not upstream_file.is_file():
+            raise SystemExit(f"overlay.lock.json lists missing upstream file: {rel}")
+        actual = _hash.sha256(upstream_file.read_bytes()).hexdigest()
+        if actual != expected:
+            raise SystemExit(f"overlay lock mismatch for {rel}: upstream sha256 {actual} != recorded {expected}; 3-way merge per durable-memory/ack-deadline-overlay.md and update overlay.lock.json")
 for path in (ROOT / 'src').rglob('*.java'):
     dest = source / path.relative_to(ROOT)
     dest.parent.mkdir(parents=True, exist_ok=True)

@@ -53,7 +53,7 @@ opt into real containers. GCS and Pub/Sub run in process.
 
 `upstream.lock.json` pins floci-gcp 0.11.0 by commit and source SHA256. Upstream
 publishes container images but no release binaries, so we build source with a
-small Java CLI and auth overlay, without maintaining a fork or mirroring upstream.
+small Java CLI and auth overlay that replaces selected upstream handlers; overlay.lock.json pins each copied file to its original upstream sha256, and durable-memory/ack-deadline-overlay.md documents the 3-way-merge rules.
 `FLOCI-LICENSE` preserves upstream's MIT notice. Our code is MIT licensed.
 
 `python3 scripts/build.py` builds a JVM distribution for faster iteration;

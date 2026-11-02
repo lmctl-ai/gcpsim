@@ -170,3 +170,11 @@ native CLI, lifecycle, real gcloud, auth/client, and template tests. The freshly
 built CI Linux ARM64 artifact additionally passed open/enforce template tests
 locally with `~/lmctl-mono/bin/lmscript`. The existing v0.2.0 release and pinned
 lmgcp v0.1.9 release remain unchanged; Wave 12 ships on main.
+
+
+## lmgcp client pin
+
+`client.lock.json` pins lmgcp v0.1.9, the latest release. That binary still
+exposes `--dsl`, not `--lmcode`; client-dependent auth cases skip with a clear
+message until a release supports `--lmcode`. The simulator server checks still
+run.

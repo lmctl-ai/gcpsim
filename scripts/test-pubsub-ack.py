@@ -65,11 +65,17 @@ with tempfile.TemporaryDirectory(prefix='gcpsim-ack-') as tmp:
             ack2 = redelivered['receivedMessages'][0]['ackId']
             assert call('/v1/projects/gcpsim-local/subscriptions/ack-sub:acknowledge',
                         {'ackIds': [ack2]}, 'POST')[0] == 200
-            for body in ({'ackIds': ['bogus'], 'ackDeadlineSeconds': 10},
+            for body in ({'ackIds': [''], 'ackDeadlineSeconds': 10},
                          {'ackIds': [ack2], 'ackDeadlineSeconds': 601},
+                         {'ackIds': [ack2], 'ackDeadlineSeconds': 0.5},
+                         {'ackIds': [ack2], 'ackDeadlineSeconds': 4294967296},
                          {'ackIds': [], 'ackDeadlineSeconds': 10}):
                 status, err = call(base, body, 'POST')
                 assert status == 400 and err['error']['status'] == 'INVALID_ARGUMENT', (status, err)
+            # Stale/already-acked well-formed ids are accepted like upstream acknowledge.
+            assert call(base, {'ackIds': [ack2], 'ackDeadlineSeconds': 10}, 'POST')[0] == 200
+            # Mixed valid + unknown ids is accepted; unknown ids are ignored.
+            assert call(base, {'ackIds': [ack2, 'bogus'], 'ackDeadlineSeconds': 10}, 'POST')[0] == 200
             print('PASS: modifyAckDeadline 0 redelivery, 30s hide, bounds and invalid ackId errors')
         except BaseException:
             log.flush()
