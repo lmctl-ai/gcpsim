@@ -647,8 +647,8 @@ public class PubSubService {
         if (subStore.get(subName).isEmpty()) {
             throw GcpException.notFound("Subscription not found: " + subName);
         }
-        if (!(ackDeadlineSeconds == 0 || (ackDeadlineSeconds >= 10 && ackDeadlineSeconds <= 600))) {
-            throw GcpException.invalidArgument("ackDeadlineSeconds must be 0 or 10..600");
+        if (ackDeadlineSeconds < 0 || ackDeadlineSeconds > 600) {
+            throw GcpException.invalidArgument("ackDeadlineSeconds must be 0..600");
         }
         ConcurrentHashMap<String, StoredMessage> deliveredMap = delivered.get(subName);
         if (deliveredMap == null) {

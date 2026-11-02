@@ -48,8 +48,8 @@ public class PubSubAckDeadlineRestController {
             throw GcpException.invalidArgument("ackDeadlineSeconds must be an integer");
         }
         int seconds = number.intValue();
-        if (!(seconds == 0 || (seconds >= 10 && seconds <= 600))) {
-            throw GcpException.invalidArgument("ackDeadlineSeconds must be 0 or 10..600");
+        if (seconds < 0 || seconds > 600) {
+            throw GcpException.invalidArgument("ackDeadlineSeconds must be 0..600");
         }
         service.modifyAckDeadline("projects/" + project + "/subscriptions/" + subscription, ackIds, seconds);
         return Response.ok(Map.of()).build();
