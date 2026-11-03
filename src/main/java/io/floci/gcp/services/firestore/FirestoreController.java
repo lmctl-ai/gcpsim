@@ -1,0 +1,525 @@
+/* modified from floci-gcp 0.11.0 0fa563c603c1876a09b050ffdce0d96bac00fedc
+   See durable-memory/ack-deadline-overlay.md and overlay.lock.json. */
+package io.floci.gcp.services.firestore;
+
+import com.google.firestore.v1.AggregationResult;
+import com.google.firestore.v1.BatchGetDocumentsRequest;
+import com.google.firestore.v1.BatchGetDocumentsResponse;
+import com.google.firestore.v1.BatchWriteRequest;
+import com.google.firestore.v1.BatchWriteResponse;
+import com.google.firestore.v1.BeginTransactionRequest;
+import com.google.firestore.v1.BeginTransactionResponse;
+import com.google.firestore.v1.CommitRequest;
+import com.google.firestore.v1.CommitResponse;
+import com.google.firestore.v1.CreateDocumentRequest;
+import com.google.firestore.v1.DeleteDocumentRequest;
+import com.google.firestore.v1.Document;
+import com.google.firestore.v1.DocumentChange;
+import com.google.firestore.v1.FirestoreGrpc;
+import com.google.firestore.v1.GetDocumentRequest;
+import com.google.firestore.v1.ListCollectionIdsRequest;
+import com.google.firestore.v1.ListCollectionIdsResponse;
+import com.google.firestore.v1.ListDocumentsRequest;
+import com.google.firestore.v1.ListDocumentsResponse;
+import com.google.firestore.v1.ListenRequest;
+import com.google.firestore.v1.ListenResponse;
+import com.google.firestore.v1.PartitionQueryRequest;
+import com.google.firestore.v1.PartitionQueryResponse;
+import com.google.firestore.v1.Precondition;
+import com.google.firestore.v1.RollbackRequest;
+import com.google.firestore.v1.RunAggregationQueryRequest;
+import com.google.firestore.v1.RunAggregationQueryResponse;
+import com.google.firestore.v1.RunQueryRequest;
+import com.google.firestore.v1.RunQueryResponse;
+import com.google.firestore.v1.StructuredAggregationQuery;
+import com.google.firestore.v1.StructuredQuery;
+import com.google.firestore.v1.Target;
+import com.google.firestore.v1.TargetChange;
+import com.google.firestore.v1.UpdateDocumentRequest;
+import com.google.firestore.v1.Value;
+import com.google.firestore.v1.Write;
+import com.google.firestore.v1.WriteRequest;
+import com.google.firestore.v1.WriteResponse;
+import com.google.firestore.v1.WriteResult;
+import com.google.protobuf.ByteString;
+import com.google.protobuf.Empty;
+import com.google.protobuf.Timestamp;
+import com.google.rpc.Status;
+import io.floci.gcp.core.common.GcpGrpcController;
+import io.floci.gcp.services.firestore.model.StoredDocument;
+import io.floci.gcp.services.firestore.model.StoredValue;
+import io.grpc.stub.StreamObserver;
+import org.jboss.logging.Logger;
+
+import java.time.Instant;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Optional;
+
+public class FirestoreController extends FirestoreGrpc.FirestoreImplBase {
+
+    private static final Logger LOG = Logger.getLogger(FirestoreController.class);
+
+    private final FirestoreService service;
+
+    FirestoreController(FirestoreService service) {
+        this.service = service;
+    }
+
+    @Override
+    public void commit(CommitRequest request, StreamObserver<CommitResponse> responseObserver) {
+        LOG.debugf("commit database=%s writes=%d", request.getDatabase(), request.getWritesCount());
+        try {
+            Instant commitTime = Instant.now();
+            CommitResponse.Builder response = CommitResponse.newBuilder()
+                    .setCommitTime(toTimestamp(commitTime.toString()));
+
+            List<FirestoreService.WriteCommitResult> results = service.commit(
+                    request.getWritesList(), request.getTransaction().toByteArray(), commitTime);
+            for (FirestoreService.WriteCommitResult result : results) {
+                WriteResult.Builder wr = WriteResult.newBuilder();
+                if (result.updateTime() != null) {
+                    wr.setUpdateTime(toTimestamp(result.updateTime()));
+                }
+                response.addWriteResults(wr.build());
+            }
+
+            responseObserver.onNext(response.build());
+            responseObserver.onCompleted();
+        } catch (Exception e) {
+            LOG.warnf("commit failed: %s", e.getMessage());
+            GcpGrpcController.grpcError(responseObserver, e);
+        }
+    }
+
+    @Override
+    public void getDocument(GetDocumentRequest request, StreamObserver<Document> responseObserver) {
+        LOG.debugf("getDocument name=%s", request.getName());
+        try {
+            Optional<StoredDocument> stored = service.getDocument(request.getName());
+            if (!request.getTransaction().isEmpty()) {
+                service.recordTransactionRead(request.getTransaction().toByteArray(), request.getName(),
+                        stored.map(StoredDocument::getUpdateTime).orElse(null));
+            }
+            responseObserver.onNext(toProto(stored.orElseThrow(
+                    () -> io.floci.gcp.core.common.GcpException.notFound(
+                            "Document not found: " + request.getName()))));
+            responseObserver.onCompleted();
+        } catch (Exception e) {
+            LOG.warnf("getDocument failed: %s", e.getMessage());
+            GcpGrpcController.grpcError(responseObserver, e);
+        }
+    }
+
+    @Override
+    public void batchGetDocuments(BatchGetDocumentsRequest request,
+            StreamObserver<BatchGetDocumentsResponse> responseObserver) {
+        LOG.debugf("batchGetDocuments database=%s docs=%d", request.getDatabase(), request.getDocumentsCount());
+        try {
+            Instant readTime = Instant.now();
+            ByteString txId = request.getTransaction();
+            boolean newTransaction = request.hasNewTransaction();
+            if (newTransaction) {
+                txId = ByteString.copyFrom(service.beginTransaction());
+            }
+            boolean first = true;
+            for (String docName : request.getDocumentsList()) {
+                Optional<StoredDocument> stored = service.getDocument(docName);
+                if (!txId.isEmpty()) {
+                    service.recordTransactionRead(txId.toByteArray(), docName,
+                            stored.map(StoredDocument::getUpdateTime).orElse(null));
+                }
+                BatchGetDocumentsResponse.Builder resp = BatchGetDocumentsResponse.newBuilder()
+                        .setReadTime(toTimestamp(readTime.toString()));
+                if (newTransaction && first) {
+                    resp.setTransaction(txId);
+                    first = false;
+                }
+                if (stored.isPresent()) {
+                    resp.setFound(toProto(stored.get()));
+                } else {
+                    resp.setMissing(docName);
+                }
+                responseObserver.onNext(resp.build());
+            }
+            if (newTransaction && first) {
+                responseObserver.onNext(BatchGetDocumentsResponse.newBuilder()
+                        .setReadTime(toTimestamp(readTime.toString()))
+                        .setTransaction(txId)
+                        .build());
+            }
+            responseObserver.onCompleted();
+        } catch (Exception e) {
+            LOG.warnf("batchGetDocuments failed: %s", e.getMessage());
+            GcpGrpcController.grpcError(responseObserver, e);
+        }
+    }
+
+    @Override
+    public void runQuery(RunQueryRequest request, StreamObserver<RunQueryResponse> responseObserver) {
+        LOG.debugf("runQuery parent=%s", request.getParent());
+        try {
+            Instant readTime = Instant.now();
+            ByteString txId = request.getTransaction();
+            if (request.hasNewTransaction()) {
+                txId = ByteString.copyFrom(service.beginTransaction());
+                // per firestore.proto, the new transaction id is a first response of its own
+                // with no other fields set
+                responseObserver.onNext(RunQueryResponse.newBuilder()
+                        .setTransaction(txId)
+                        .build());
+            }
+            List<StoredDocument> results = service.runQuery(request.getParent(), request.getStructuredQuery());
+
+            for (StoredDocument doc : results) {
+                if (!txId.isEmpty()) {
+                    service.recordTransactionRead(txId.toByteArray(), doc.getName(), doc.getUpdateTime());
+                }
+                responseObserver.onNext(RunQueryResponse.newBuilder()
+                        .setDocument(toProto(doc))
+                        .setReadTime(toTimestamp(readTime.toString()))
+                        .build());
+            }
+
+            // terminal message
+            responseObserver.onNext(RunQueryResponse.newBuilder()
+                    .setReadTime(toTimestamp(readTime.toString()))
+                    .setDone(true)
+                    .build());
+            responseObserver.onCompleted();
+        } catch (Exception e) {
+            LOG.warnf("runQuery failed: %s", e.getMessage());
+            GcpGrpcController.grpcError(responseObserver, e);
+        }
+    }
+
+    @Override
+    public void beginTransaction(BeginTransactionRequest request,
+            StreamObserver<BeginTransactionResponse> responseObserver) {
+        LOG.debugf("beginTransaction database=%s", request.getDatabase());
+        try {
+            byte[] txId = service.beginTransaction();
+            responseObserver.onNext(BeginTransactionResponse.newBuilder()
+                    .setTransaction(ByteString.copyFrom(txId))
+                    .build());
+            responseObserver.onCompleted();
+        } catch (Exception e) {
+            LOG.warnf("beginTransaction failed: %s", e.getMessage());
+            GcpGrpcController.grpcError(responseObserver, e);
+        }
+    }
+
+    @Override
+    public void rollback(RollbackRequest request, StreamObserver<Empty> responseObserver) {
+        LOG.debugf("rollback database=%s", request.getDatabase());
+        service.rollback(request.getTransaction().toByteArray());
+        responseObserver.onNext(Empty.getDefaultInstance());
+        responseObserver.onCompleted();
+    }
+
+    @Override
+    public void listDocuments(ListDocumentsRequest request, StreamObserver<ListDocumentsResponse> responseObserver) {
+        LOG.debugf("listDocuments parent=%s collection=%s", request.getParent(), request.getCollectionId());
+        try {
+            String prefix = request.getParent() + "/" + request.getCollectionId() + "/";
+            List<StoredDocument> docs = service.runQuery(request.getParent(),
+                    StructuredQuery.newBuilder()
+                            .addFrom(StructuredQuery.CollectionSelector.newBuilder()
+                                    .setCollectionId(request.getCollectionId())
+                                    .build())
+                            .build())
+                    .stream()
+                    .sorted(Comparator.comparing(StoredDocument::getName))
+                    .toList();
+
+            String token = request.getPageToken();
+            if (!token.isEmpty()) {
+                String fullToken = token.startsWith(prefix) ? token : prefix + token;
+                docs = docs.stream()
+                        .filter(d -> d.getName().compareTo(fullToken) > 0)
+                        .toList();
+            }
+
+            int pageSize = request.getPageSize();
+            String nextToken = "";
+            if (pageSize > 0 && docs.size() > pageSize) {
+                docs = docs.subList(0, pageSize);
+                String lastName = docs.get(docs.size() - 1).getName();
+                nextToken = lastName.startsWith(prefix) ? lastName.substring(prefix.length()) : lastName;
+            }
+
+            ListDocumentsResponse.Builder resp = ListDocumentsResponse.newBuilder();
+            docs.forEach(d -> resp.addDocuments(toProto(d)));
+            if (!nextToken.isEmpty()) {
+                resp.setNextPageToken(nextToken);
+            }
+            responseObserver.onNext(resp.build());
+            responseObserver.onCompleted();
+        } catch (Exception e) {
+            LOG.warnf("listDocuments failed: %s", e.getMessage());
+            GcpGrpcController.grpcError(responseObserver, e);
+        }
+    }
+
+    @Override
+    public void updateDocument(UpdateDocumentRequest request, StreamObserver<Document> responseObserver) {
+        LOG.debugf("updateDocument name=%s", request.getDocument().getName());
+        try {
+            Write.Builder write = Write.newBuilder()
+                    .setUpdate(request.getDocument());
+            if (request.hasUpdateMask()) {
+                write.setUpdateMask(request.getUpdateMask());
+            }
+            if (request.hasCurrentDocument()) {
+                write.setCurrentDocument(request.getCurrentDocument());
+            }
+            service.applyWrite(write.build(), Instant.now());
+            StoredDocument stored = service.getDocument(request.getDocument().getName())
+                    .orElseThrow();
+            responseObserver.onNext(toProto(stored));
+            responseObserver.onCompleted();
+        } catch (Exception e) {
+            LOG.warnf("updateDocument failed: %s", e.getMessage());
+            GcpGrpcController.grpcError(responseObserver, e);
+        }
+    }
+
+    @Override
+    public void deleteDocument(DeleteDocumentRequest request, StreamObserver<Empty> responseObserver) {
+        LOG.debugf("deleteDocument name=%s", request.getName());
+        try {
+            Write.Builder write = Write.newBuilder().setDelete(request.getName());
+            if (request.hasCurrentDocument()) {
+                write.setCurrentDocument(request.getCurrentDocument());
+            }
+            service.applyWrite(write.build(), Instant.now());
+            responseObserver.onNext(Empty.getDefaultInstance());
+            responseObserver.onCompleted();
+        } catch (Exception e) {
+            LOG.warnf("deleteDocument failed: %s", e.getMessage());
+            GcpGrpcController.grpcError(responseObserver, e);
+        }
+    }
+
+    @Override
+    public void createDocument(CreateDocumentRequest request, StreamObserver<Document> responseObserver) {
+        LOG.debugf("createDocument parent=%s collection=%s", request.getParent(), request.getCollectionId());
+        try {
+            String docId = request.getDocumentId().isEmpty()
+                    ? java.util.UUID.randomUUID().toString()
+                    : request.getDocumentId();
+            String name = request.getParent() + "/" + request.getCollectionId() + "/" + docId;
+            Document doc = request.getDocument().toBuilder().setName(name).build();
+            Write write = Write.newBuilder()
+                    .setUpdate(doc)
+                    .setCurrentDocument(Precondition.newBuilder().setExists(false).build())
+                    .build();
+            service.applyWrite(write, Instant.now());
+            responseObserver.onNext(toProto(service.getDocument(name).orElseThrow()));
+            responseObserver.onCompleted();
+        } catch (Exception e) {
+            LOG.warnf("createDocument failed: %s", e.getMessage());
+            GcpGrpcController.grpcError(responseObserver, e);
+        }
+    }
+
+    @Override
+    public void listCollectionIds(ListCollectionIdsRequest request,
+            StreamObserver<ListCollectionIdsResponse> responseObserver) {
+        LOG.debugf("listCollectionIds parent=%s", request.getParent());
+        try {
+            List<String> ids = service.listCollectionIds(request.getParent());
+            responseObserver.onNext(ListCollectionIdsResponse.newBuilder()
+                    .addAllCollectionIds(ids).build());
+            responseObserver.onCompleted();
+        } catch (Exception e) {
+            LOG.warnf("listCollectionIds failed: %s", e.getMessage());
+            GcpGrpcController.grpcError(responseObserver, e);
+        }
+    }
+
+    @Override
+    public void batchWrite(BatchWriteRequest request, StreamObserver<BatchWriteResponse> responseObserver) {
+        LOG.debugf("batchWrite database=%s writes=%d", request.getDatabase(), request.getWritesCount());
+        try {
+            Instant commitTime = Instant.now();
+            BatchWriteResponse.Builder resp = BatchWriteResponse.newBuilder();
+            // BatchWrite is non-atomic: each write succeeds or fails independently
+            for (Write write : request.getWritesList()) {
+                try {
+                    FirestoreService.WriteCommitResult result = service.applyWrite(write, commitTime);
+                    WriteResult.Builder wr = WriteResult.newBuilder();
+                    if (result.updateTime() != null) {
+                        wr.setUpdateTime(toTimestamp(result.updateTime()));
+                    }
+                    resp.addWriteResults(wr.build());
+                    resp.addStatus(Status.newBuilder().setCode(0).build());
+                } catch (RuntimeException e) {
+                    io.grpc.Status mapped = GcpGrpcController.grpcException(e).getStatus();
+                    String message = mapped.getDescription();
+                    resp.addWriteResults(WriteResult.getDefaultInstance());
+                    resp.addStatus(Status.newBuilder()
+                            .setCode(mapped.getCode().value())
+                            .setMessage(message == null ? "" : message)
+                            .build());
+                }
+            }
+            responseObserver.onNext(resp.build());
+            responseObserver.onCompleted();
+        } catch (Exception e) {
+            LOG.warnf("batchWrite failed: %s", e.getMessage());
+            GcpGrpcController.grpcError(responseObserver, e);
+        }
+    }
+
+    @Override
+    public void runAggregationQuery(RunAggregationQueryRequest request,
+            StreamObserver<RunAggregationQueryResponse> responseObserver) {
+        LOG.debugf("runAggregationQuery parent=%s", request.getParent());
+        try {
+            Instant readTime = Instant.now();
+            AggregationResult.Builder agg = AggregationResult.newBuilder();
+            if (request.hasStructuredAggregationQuery()) {
+                StructuredAggregationQuery saq = request.getStructuredAggregationQuery();
+                long count = service.countDocuments(request.getParent(),
+                        saq.hasStructuredQuery() ? saq.getStructuredQuery()
+                                : com.google.firestore.v1.StructuredQuery.getDefaultInstance());
+                for (StructuredAggregationQuery.Aggregation aggregation : saq.getAggregationsList()) {
+                    String alias = aggregation.getAlias().isEmpty() ? "field_1" : aggregation.getAlias();
+                    agg.putAggregateFields(alias,
+                            Value.newBuilder().setIntegerValue(count).build());
+                }
+            }
+            responseObserver.onNext(RunAggregationQueryResponse.newBuilder()
+                    .setResult(agg.build())
+                    .setReadTime(toTimestamp(readTime.toString()))
+                    .build());
+            responseObserver.onCompleted();
+        } catch (Exception e) {
+            LOG.warnf("runAggregationQuery failed: %s", e.getMessage());
+            GcpGrpcController.grpcError(responseObserver, e);
+        }
+    }
+
+    @Override
+    public void partitionQuery(PartitionQueryRequest request,
+            StreamObserver<PartitionQueryResponse> responseObserver) {
+        responseObserver.onNext(PartitionQueryResponse.getDefaultInstance());
+        responseObserver.onCompleted();
+    }
+
+    @Override
+    public StreamObserver<WriteRequest> write(StreamObserver<WriteResponse> responseObserver) {
+        return new StreamObserver<>() {
+            public void onNext(WriteRequest req) {
+                try {
+                    Instant now = Instant.now();
+                    WriteResponse.Builder resp = WriteResponse.newBuilder()
+                            .setStreamId(req.getStreamId())
+                            .setCommitTime(toTimestamp(now.toString()));
+                    for (FirestoreService.WriteCommitResult r
+                            : service.commit(req.getWritesList(), null, now)) {
+                        WriteResult.Builder wr = WriteResult.newBuilder();
+                        if (r.updateTime() != null) {
+                            wr.setUpdateTime(toTimestamp(r.updateTime()));
+                        }
+                        resp.addWriteResults(wr.build());
+                    }
+                    responseObserver.onNext(resp.build());
+                } catch (Exception e) {
+                    LOG.warnf("write stream error: %s", e.getMessage());
+                    responseObserver.onError(GcpGrpcController.grpcException(e));
+                }
+            }
+            public void onError(Throwable t) { LOG.debugf("write stream closed by client: %s", t.getMessage()); }
+            public void onCompleted() { responseObserver.onCompleted(); }
+        };
+    }
+
+    @Override
+    public StreamObserver<ListenRequest> listen(StreamObserver<ListenResponse> responseObserver) {
+        return new StreamObserver<>() {
+            private volatile boolean initialized = false;
+
+            public void onNext(ListenRequest req) {
+                try {
+                    if (req.hasAddTarget() && !initialized) {
+                        initialized = true;
+                        Target target = req.getAddTarget();
+                        int targetId = target.getTargetId();
+                        Instant now = Instant.now();
+                        Timestamp readTime = toTimestamp(now.toString());
+
+                        responseObserver.onNext(ListenResponse.newBuilder()
+                                .setTargetChange(TargetChange.newBuilder()
+                                        .setTargetChangeType(TargetChange.TargetChangeType.ADD)
+                                        .addTargetIds(targetId)
+                                        .setReadTime(readTime)
+                                        .build())
+                                .build());
+
+                        if (target.hasQuery()) {
+                            Target.QueryTarget qt = target.getQuery();
+                            List<StoredDocument> docs = service.runQuery(qt.getParent(),
+                                    qt.hasStructuredQuery() ? qt.getStructuredQuery()
+                                            : StructuredQuery.getDefaultInstance());
+                            for (StoredDocument doc : docs) {
+                                responseObserver.onNext(ListenResponse.newBuilder()
+                                        .setDocumentChange(DocumentChange.newBuilder()
+                                                .setDocument(toProto(doc))
+                                                .addTargetIds(targetId)
+                                                .build())
+                                        .build());
+                            }
+                        }
+
+                        responseObserver.onNext(ListenResponse.newBuilder()
+                                .setTargetChange(TargetChange.newBuilder()
+                                        .setTargetChangeType(TargetChange.TargetChangeType.CURRENT)
+                                        .addTargetIds(targetId)
+                                        .setReadTime(readTime)
+                                        .build())
+                                .build());
+                    }
+                } catch (Exception e) {
+                    LOG.warnf("listen error: %s", e.getMessage());
+                    responseObserver.onError(GcpGrpcController.grpcException(e));
+                }
+            }
+
+            public void onError(Throwable t) {
+                LOG.debugf("listen stream closed by client: %s", t.getMessage());
+            }
+
+            public void onCompleted() {
+                responseObserver.onCompleted();
+            }
+        };
+    }
+
+    // ── Helpers ────────────────────────────────────────────────────────────────
+
+    private static Document toProto(StoredDocument stored) {
+        Document.Builder builder = Document.newBuilder()
+                .setName(stored.getName())
+                .setCreateTime(toTimestamp(stored.getCreateTime()))
+                .setUpdateTime(toTimestamp(stored.getUpdateTime()));
+        if (stored.getFields() != null) {
+            stored.getFields().forEach((k, v) -> builder.putFields(k, v.toProto()));
+        }
+        return builder.build();
+    }
+
+    static Timestamp toTimestamp(String isoTime) {
+        if (isoTime == null) return Timestamp.getDefaultInstance();
+        try {
+            Instant instant = Instant.parse(isoTime);
+            return Timestamp.newBuilder()
+                    .setSeconds(instant.getEpochSecond())
+                    .setNanos(instant.getNano())
+                    .build();
+        } catch (Exception e) {
+            return Timestamp.getDefaultInstance();
+        }
+    }
+}

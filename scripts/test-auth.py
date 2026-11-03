@@ -123,6 +123,10 @@ with tempfile.TemporaryDirectory(prefix='gcpsim-auth-') as directory:
         req('/storage/v1/b/allowed-bucket/iam', status=403)
         req('/google.pubsub.v1.Publisher/ListTopics', 'POST', {}, status=403, content_type='application/grpc')
         req('/google.pubsub.v1.Publisher/ListTopics', 'POST', {}, token=None, status=401, content_type='application/grpc')
+        req('/google.firestore.v1.Firestore/GetDocument', 'POST', {}, token=None, status=401, content_type='application/grpc')
+        req('/google.firestore.v1.Firestore/GetDocument', 'POST', {}, token='other-dummy-token', status=403, content_type='application/grpc')
+        req('/google.firestore.v1.Firestore/DeleteDocument', 'POST', {}, status=403, content_type='application/grpc')
+        req('/google.firestore.v1.Firestore/UnknownMethod', 'POST', {}, status=403, content_type='application/grpc')
         req('/compute/v1/projects/gcpsim-local', status=403)
         print('PASS: credentials; allow/deny; newline and multipart resource identity; unsupported transports fail closed')
         if client:
@@ -161,3 +165,47 @@ with tempfile.TemporaryDirectory(prefix='gcpsim-auth-') as directory:
     run({'tokens': {TOKEN: PRINCIPAL}, 'Statement': []}, lambda req, cli: req('/storage/v1/b?project=gcpsim-local', status=403))
     run({'tokens': {TOKEN: PRINCIPAL}}, lambda req, cli: req('/storage/v1/b?project=gcpsim-local'))
     print('PASS: empty policies default deny; absent policies allow authenticated mapped operations')
+
+    if exe.suffix == '.jar' and (exe.parent / 'app').is_dir():
+        probe = tmp / 'io/floci/gcp/services/firestore/CheckFirestorePagination.java'
+        probe.parent.mkdir(parents=True, exist_ok=True)
+        probe.write_text("""package io.floci.gcp.services.firestore;
+import com.google.firestore.v1.*;
+import io.floci.gcp.core.storage.InMemoryStorage;
+import io.floci.gcp.services.firestore.model.StoredDocument;
+import io.grpc.stub.StreamObserver;
+import java.time.Instant;
+import java.util.*;
+public class CheckFirestorePagination {
+    static class Obs implements StreamObserver<ListDocumentsResponse> {
+        ListDocumentsResponse resp;
+        public void onNext(ListDocumentsResponse v) { resp = v; }
+        public void onError(Throwable t) { throw new RuntimeException(t); }
+        public void onCompleted() {}
+    }
+    public static void main(String[] args) {
+        String parent = "projects/p1/databases/(default)/documents";
+        FirestoreService svc = new FirestoreService(new InMemoryStorage<String, StoredDocument>());
+        FirestoreController ctl = new FirestoreController(svc);
+        for (String id : List.of("doc_c", "doc_a", "doc_d", "doc_b")) {
+            svc.applyWrite(Write.newBuilder().setUpdate(Document.newBuilder().setName(parent + "/col/" + id).build()).build(), Instant.now());
+        }
+        Obs p1 = new Obs();
+        ctl.listDocuments(ListDocumentsRequest.newBuilder().setParent(parent).setCollectionId("col").setPageSize(2).build(), p1);
+        List<String> names1 = p1.resp.getDocumentsList().stream().map(Document::getName).toList();
+        if (!names1.equals(List.of(parent + "/col/doc_a", parent + "/col/doc_b")) || !"doc_b".equals(p1.resp.getNextPageToken())) {
+            throw new AssertionError("page1=" + names1 + " next=" + p1.resp.getNextPageToken());
+        }
+        Obs p2 = new Obs();
+        ctl.listDocuments(ListDocumentsRequest.newBuilder().setParent(parent).setCollectionId("col").setPageSize(2).setPageToken(p1.resp.getNextPageToken()).build(), p2);
+        List<String> names2 = p2.resp.getDocumentsList().stream().map(Document::getName).toList();
+        if (!names2.equals(List.of(parent + "/col/doc_c", parent + "/col/doc_d")) || !p2.resp.getNextPageToken().isEmpty()) {
+            throw new AssertionError("page2=" + names2 + " next=" + p2.resp.getNextPageToken());
+        }
+    }
+}
+""", encoding='utf-8')
+        cp = os.pathsep.join([str(exe.parent / 'app/*'), str(exe.parent / 'lib/main/*'), str(exe.parent / 'lib/boot/*')])
+        subprocess.run([os.environ.get('JAVAC', 'javac'), '-cp', cp, '-d', str(tmp), str(probe)], check=True, timeout=30)
+        subprocess.run([os.environ.get('JAVA', 'java'), '-cp', os.pathsep.join([str(tmp), cp]), 'io.floci.gcp.services.firestore.CheckFirestorePagination'], check=True, timeout=30)
+        print('PASS: Firestore ListDocuments sorted pagination (pageSize, pageToken, nextPageToken)')

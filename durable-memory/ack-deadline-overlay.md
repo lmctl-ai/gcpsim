@@ -14,10 +14,13 @@ present under `src/`. This change adds three files under
    service instead of returning success without doing anything.
 3. `PubSubAckDeadlineRestController.java` — new 57-line JAX-RS resource for the
    missing REST route.
+4. `FirestoreController.java` (`src/main/java/io/floci/gcp/services/firestore/`) —
+   full copy of the upstream file; `listDocuments` now sorts documents by name
+   and applies `pageToken` / `pageSize` / `nextPageToken` pagination.
 
-On an upstream bump, re-copy the first two files from the new pinned upstream
-and re-apply the two small hunks below (3-way merge). The third file is ours and
-normally needs no merge.
+On an upstream bump, re-copy the overlaid files from the new pinned upstream
+and re-apply the hunks below (3-way merge). `PubSubAckDeadlineRestController.java`
+is ours and normally needs no merge.
 
 ## Exact changes vs upstream
 
