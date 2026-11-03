@@ -231,6 +231,8 @@ public class SimAuthProbe {
             var admin = stub(c, "admin-token");
             var local = stub(c, "local-token");
             var update = stub(c, "update-token");
+            var create = stub(c, "create-token");
+            var listOnly = stub(c, "list-token");
             var bad = stub(c, "invalid-token");
 
             seed(admin, FOREIGN, "secret", "foreign");
@@ -307,6 +309,124 @@ public class SimAuthProbe {
                 }
             }
 
+            // Round-3: create-vs-update preconditions on Commit / BatchWrite / Write / UpdateDocument
+            expectStatus(Status.Code.PERMISSION_DENIED,
+                    () -> update.commit(CommitRequest.newBuilder()
+                            .setDatabase("projects/gcpsim-local/databases/(default)")
+                            .addWrites(Write.newBuilder()
+                                    .setUpdate(Document.newBuilder()
+                                            .setName(ROOT + "/secret/created-by-update")
+                                            .putFields("k", Value.newBuilder().setStringValue("v").build()))
+                                    .setCurrentDocument(Precondition.newBuilder().setExists(false)))
+                            .build()),
+                    "commit create-only write with update-only token");
+            expectStatus(Status.Code.PERMISSION_DENIED,
+                    () -> update.batchWrite(BatchWriteRequest.newBuilder()
+                            .setDatabase("projects/gcpsim-local/databases/(default)")
+                            .addWrites(Write.newBuilder()
+                                    .setUpdate(Document.newBuilder()
+                                            .setName(ROOT + "/secret/created-by-update-batch")
+                                            .putFields("k", Value.newBuilder().setStringValue("v").build()))
+                                    .setCurrentDocument(Precondition.newBuilder().setExists(false)))
+                            .build()),
+                    "batchWrite create-only write with update-only token");
+            expectStatus(Status.Code.PERMISSION_DENIED,
+                    () -> update.commit(CommitRequest.newBuilder()
+                            .setDatabase("projects/gcpsim-local/databases/(default)")
+                            .addWrites(Write.newBuilder()
+                                    .setUpdate(Document.newBuilder()
+                                            .setName(ROOT + "/secret/upsert-by-update")
+                                            .putFields("k", Value.newBuilder().setStringValue("v").build())))
+                            .build()),
+                    "commit unrestricted upsert with update-only token");
+            expectStatus(Status.Code.PERMISSION_DENIED,
+                    () -> update.updateDocument(UpdateDocumentRequest.newBuilder()
+                            .setDocument(Document.newBuilder()
+                                    .setName(ROOT + "/secret/patch-exists-false")
+                                    .putFields("k", Value.newBuilder().setStringValue("v").build()))
+                            .setCurrentDocument(Precondition.newBuilder().setExists(false))
+                            .build()),
+                    "updateDocument exists=false with update-only token");
+            // Update-only token CAN commit an update with exists=true on an existing document
+            update.commit(CommitRequest.newBuilder()
+                    .setDatabase("projects/gcpsim-local/databases/(default)")
+                    .addWrites(Write.newBuilder()
+                            .setUpdate(Document.newBuilder()
+                                    .setName(ROOT + "/secret/commit")
+                                    .putFields("value", Value.newBuilder().setStringValue("updated").build()))
+                            .setCurrentDocument(Precondition.newBuilder().setExists(true)))
+                    .build());
+
+            // Create-only token cannot update (exists=true) or unrestricted-upsert, but CAN create (exists=false)
+            expectStatus(Status.Code.PERMISSION_DENIED,
+                    () -> create.commit(CommitRequest.newBuilder()
+                            .setDatabase("projects/gcpsim-local/databases/(default)")
+                            .addWrites(Write.newBuilder()
+                                    .setUpdate(Document.newBuilder()
+                                            .setName(ROOT + "/secret/commit")
+                                            .putFields("value", Value.newBuilder().setStringValue("hijack").build()))
+                                    .setCurrentDocument(Precondition.newBuilder().setExists(true)))
+                            .build()),
+                    "commit update with create-only token");
+            expectStatus(Status.Code.PERMISSION_DENIED,
+                    () -> create.commit(CommitRequest.newBuilder()
+                            .setDatabase("projects/gcpsim-local/databases/(default)")
+                            .addWrites(Write.newBuilder()
+                                    .setUpdate(Document.newBuilder()
+                                            .setName(ROOT + "/secret/upsert-by-create")
+                                            .putFields("value", Value.newBuilder().setStringValue("hijack").build())))
+                            .build()),
+                    "commit unrestricted upsert with create-only token");
+            create.commit(CommitRequest.newBuilder()
+                    .setDatabase("projects/gcpsim-local/databases/(default)")
+                    .addWrites(Write.newBuilder()
+                            .setUpdate(Document.newBuilder()
+                                    .setName(ROOT + "/secret/created-by-create")
+                                    .putFields("value", Value.newBuilder().setStringValue("created").build()))
+                            .setCurrentDocument(Precondition.newBuilder().setExists(false)))
+                    .build());
+
+            // Round-3: list-only token (get denied) cannot read documents via ListDocuments / RunQuery / RunAggregationQuery
+            expectStatus(Status.Code.PERMISSION_DENIED,
+                    () -> listOnly.listDocuments(ListDocumentsRequest.newBuilder()
+                            .setParent(ROOT)
+                            .setCollectionId("secret")
+                            .build()),
+                    "listDocuments with get denied");
+            expectStatus(Status.Code.PERMISSION_DENIED,
+                    () -> listOnly.runQuery(RunQueryRequest.newBuilder()
+                            .setParent(ROOT)
+                            .setStructuredQuery(StructuredQuery.newBuilder()
+                                    .addFrom(StructuredQuery.CollectionSelector.newBuilder().setCollectionId("secret")))
+                            .build()).hasNext(),
+                    "runQuery with get denied");
+            expectStatus(Status.Code.PERMISSION_DENIED,
+                    () -> listOnly.runAggregationQuery(RunAggregationQueryRequest.newBuilder()
+                            .setParent(ROOT)
+                            .setStructuredAggregationQuery(StructuredAggregationQuery.newBuilder()
+                                    .setStructuredQuery(StructuredQuery.newBuilder()
+                                            .addFrom(StructuredQuery.CollectionSelector.newBuilder().setCollectionId("secret"))))
+                            .build()).hasNext(),
+                    "runAggregationQuery with get denied");
+            // ListCollectionIds only enumerates collection names and requires datastore.entities.list
+            var cols = listOnly.listCollectionIds(ListCollectionIdsRequest.newBuilder().setParent(ROOT).build());
+            if (!cols.getCollectionIdsList().contains("secret")) {
+                throw new AssertionError("Expected secret in listCollectionIds: " + cols.getCollectionIdsList());
+            }
+            // BeginTransaction requires datastore.databases.get (denied for list-only token, allowed for admin)
+            expectStatus(Status.Code.PERMISSION_DENIED,
+                    () -> listOnly.beginTransaction(BeginTransactionRequest.newBuilder()
+                            .setDatabase("projects/gcpsim-local/databases/(default)")
+                            .build()),
+                    "beginTransaction without datastore.databases.get");
+            var tx = admin.beginTransaction(BeginTransactionRequest.newBuilder()
+                    .setDatabase("projects/gcpsim-local/databases/(default)")
+                    .build());
+            admin.rollback(RollbackRequest.newBuilder()
+                    .setDatabase("projects/gcpsim-local/databases/(default)")
+                    .setTransaction(tx.getTransaction())
+                    .build());
+
             // Listen and UnknownMethod fail closed with PERMISSION_DENIED
             CountDownLatch listenLatch = new CountDownLatch(1);
             AtomicReference<Throwable> listenErr = new AtomicReference<>();
@@ -382,6 +502,8 @@ public class SimAuthProbe {
                 'admin-token': 'user:admin@example.test',
                 'local-token': 'user:local@example.test',
                 'update-token': 'user:update@example.test',
+                'create-token': 'user:create@example.test',
+                'list-token': 'user:list@example.test',
             },
             'Statement': [
                 {'Effect': 'Allow', 'ActionGlob': '*', 'ResourceGlob': '*', 'Principal': 'user:admin@example.test'},
@@ -389,7 +511,13 @@ public class SimAuthProbe {
                 {'Effect': 'Deny', 'ActionGlob': '*', 'ResourceGlob': 'projects/foreign-project*', 'Principal': 'user:local@example.test'},
                 {'Effect': 'Deny', 'ActionGlob': '*', 'ResourceGlob': 'projects/gcpsim-local/databases/(default)/documents/forbidden-col*', 'Principal': 'user:local@example.test'},
                 {'Effect': 'Allow', 'Action': 'datastore.entities.update', 'ResourceGlob': 'projects/gcpsim-local', 'Principal': 'user:update@example.test'},
+                {'Effect': 'Deny', 'Action': 'datastore.entities.create', 'ResourceGlob': '*', 'Principal': 'user:update@example.test'},
                 {'Effect': 'Deny', 'Action': 'datastore.entities.delete', 'ResourceGlob': '*', 'Principal': 'user:update@example.test'},
+                {'Effect': 'Allow', 'Action': 'datastore.entities.create', 'ResourceGlob': 'projects/gcpsim-local', 'Principal': 'user:create@example.test'},
+                {'Effect': 'Deny', 'Action': 'datastore.entities.update', 'ResourceGlob': '*', 'Principal': 'user:create@example.test'},
+                {'Effect': 'Deny', 'Action': 'datastore.entities.delete', 'ResourceGlob': '*', 'Principal': 'user:create@example.test'},
+                {'Effect': 'Allow', 'Action': 'datastore.entities.list', 'ResourceGlob': 'projects/gcpsim-local', 'Principal': 'user:list@example.test'},
+                {'Effect': 'Deny', 'Action': 'datastore.entities.get', 'ResourceGlob': '*', 'Principal': 'user:list@example.test'},
             ],
         }
         grpc_auth_path = tmp / 'grpc-auth.json'

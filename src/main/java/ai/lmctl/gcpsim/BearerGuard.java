@@ -9,6 +9,7 @@ import com.google.firestore.v1.DeleteDocumentRequest;
 import com.google.firestore.v1.GetDocumentRequest;
 import com.google.firestore.v1.ListCollectionIdsRequest;
 import com.google.firestore.v1.ListDocumentsRequest;
+import com.google.firestore.v1.Precondition;
 import com.google.firestore.v1.RollbackRequest;
 import com.google.firestore.v1.RunAggregationQueryRequest;
 import com.google.firestore.v1.RunQueryRequest;
@@ -153,8 +154,15 @@ public class BearerGuard {
                 if (!req.hasDocument()) {
                     throw new IllegalArgumentException("Document is required");
                 }
-                requireDocumentPath(req.getDocument().getName());
-                authorizeResource(principal, "datastore.entities.update", req.getDocument().getName());
+                String doc = req.getDocument().getName();
+                requireDocumentPath(doc);
+                if (req.hasCurrentDocument()
+                        && req.getCurrentDocument().getConditionTypeCase() == Precondition.ConditionTypeCase.EXISTS
+                        && !req.getCurrentDocument().getExists()) {
+                    authorizeResource(principal, "datastore.entities.create", doc);
+                } else {
+                    authorizeResource(principal, "datastore.entities.update", doc);
+                }
             }
             case "DeleteDocument" -> {
                 DeleteDocumentRequest req = (DeleteDocumentRequest) message;
@@ -165,28 +173,30 @@ public class BearerGuard {
                 ListDocumentsRequest req = (ListDocumentsRequest) message;
                 requireParentPath(req.getParent());
                 requireSingleSegment(req.getCollectionId());
-                authorizeResource(principal, "datastore.entities.list", req.getParent() + "/" + req.getCollectionId());
+                String target = req.getParent() + "/" + req.getCollectionId();
+                authorizeResource(principal, "datastore.entities.get", target);
+                authorizeResource(principal, "datastore.entities.list", target);
             }
             case "ListCollectionIds" -> {
                 ListCollectionIdsRequest req = (ListCollectionIdsRequest) message;
                 requireParentPath(req.getParent());
-                authorizeResource(principal, "datastore.databases.listCollectionIds", req.getParent());
+                authorizeResource(principal, "datastore.entities.list", req.getParent());
             }
             case "BeginTransaction" -> {
                 BeginTransactionRequest req = (BeginTransactionRequest) message;
                 requireDatabasePath(req.getDatabase());
-                authorizeResource(principal, "datastore.entities.get", req.getDatabase());
+                authorizeResource(principal, "datastore.databases.get", req.getDatabase());
             }
             case "Rollback" -> {
                 RollbackRequest req = (RollbackRequest) message;
                 requireDatabasePath(req.getDatabase());
-                authorizeResource(principal, "datastore.entities.update", req.getDatabase());
+                authorizeResource(principal, "datastore.databases.get", req.getDatabase());
             }
             case "Commit" -> {
                 CommitRequest req = (CommitRequest) message;
                 requireDatabasePath(req.getDatabase());
                 if (req.getWritesCount() == 0) {
-                    authorizeResource(principal, "datastore.entities.update", req.getDatabase());
+                    authorizeAnyEntityMutation(principal, req.getDatabase());
                 }
                 for (Write w : req.getWritesList()) {
                     authorizeWrite(principal, req.getDatabase(), w);
@@ -196,7 +206,7 @@ public class BearerGuard {
                 BatchWriteRequest req = (BatchWriteRequest) message;
                 requireDatabasePath(req.getDatabase());
                 if (req.getWritesCount() == 0) {
-                    authorizeResource(principal, "datastore.entities.update", req.getDatabase());
+                    authorizeAnyEntityMutation(principal, req.getDatabase());
                 }
                 for (Write w : req.getWritesList()) {
                     authorizeWrite(principal, req.getDatabase(), w);
@@ -207,7 +217,9 @@ public class BearerGuard {
                 String db = req.getDatabase();
                 if (!db.isEmpty()) {
                     requireDatabasePath(db);
-                    authorizeResource(principal, "datastore.entities.update", db);
+                    if (req.getWritesCount() == 0) {
+                        authorizeAnyEntityMutation(principal, db);
+                    }
                 } else if (req.getWritesCount() == 0) {
                     throw new IllegalArgumentException("WriteRequest database or writes required");
                 }
@@ -227,22 +239,28 @@ public class BearerGuard {
             case "RunQuery" -> {
                 RunQueryRequest req = (RunQueryRequest) message;
                 requireParentPath(req.getParent());
+                authorizeResource(principal, "datastore.entities.get", req.getParent());
                 authorizeResource(principal, "datastore.entities.list", req.getParent());
                 if (req.hasStructuredQuery()) {
                     for (StructuredQuery.CollectionSelector sel : req.getStructuredQuery().getFromList()) {
                         requireSingleSegment(sel.getCollectionId());
-                        authorizeResource(principal, "datastore.entities.list", req.getParent() + "/" + sel.getCollectionId());
+                        String target = req.getParent() + "/" + sel.getCollectionId();
+                        authorizeResource(principal, "datastore.entities.get", target);
+                        authorizeResource(principal, "datastore.entities.list", target);
                     }
                 }
             }
             case "RunAggregationQuery" -> {
                 RunAggregationQueryRequest req = (RunAggregationQueryRequest) message;
                 requireParentPath(req.getParent());
+                authorizeResource(principal, "datastore.entities.get", req.getParent());
                 authorizeResource(principal, "datastore.entities.list", req.getParent());
                 if (req.hasStructuredAggregationQuery() && req.getStructuredAggregationQuery().hasStructuredQuery()) {
                     for (StructuredQuery.CollectionSelector sel : req.getStructuredAggregationQuery().getStructuredQuery().getFromList()) {
                         requireSingleSegment(sel.getCollectionId());
-                        authorizeResource(principal, "datastore.entities.list", req.getParent() + "/" + sel.getCollectionId());
+                        String target = req.getParent() + "/" + sel.getCollectionId();
+                        authorizeResource(principal, "datastore.entities.get", target);
+                        authorizeResource(principal, "datastore.entities.list", target);
                     }
                 }
             }
@@ -251,6 +269,7 @@ public class BearerGuard {
     }
 
     private static void authorizeWrite(String principal, String expectedDatabase, Write w) {
+        Precondition pre = w.hasCurrentDocument() ? w.getCurrentDocument() : null;
         switch (w.getOperationCase()) {
             case UPDATE -> {
                 String doc = w.getUpdate().getName();
@@ -259,7 +278,7 @@ public class BearerGuard {
                 } else {
                     requireDocumentPath(doc);
                 }
-                authorizeResource(principal, "datastore.entities.update", doc);
+                authorizeWritePrecondition(principal, doc, pre);
             }
             case DELETE -> {
                 String doc = w.getDelete();
@@ -277,10 +296,45 @@ public class BearerGuard {
                 } else {
                     requireDocumentPath(doc);
                 }
-                authorizeResource(principal, "datastore.entities.update", doc);
+                authorizeWritePrecondition(principal, doc, pre);
             }
             default -> throw new IllegalArgumentException("Write operation required");
         }
+    }
+
+    private static void authorizeWritePrecondition(String principal, String doc, Precondition pre) {
+        if (pre != null) {
+            switch (pre.getConditionTypeCase()) {
+                case EXISTS -> {
+                    if (pre.getExists()) {
+                        authorizeResource(principal, "datastore.entities.update", doc);
+                    } else {
+                        authorizeResource(principal, "datastore.entities.create", doc);
+                    }
+                    return;
+                }
+                case UPDATE_TIME -> {
+                    authorizeResource(principal, "datastore.entities.update", doc);
+                    return;
+                }
+                default -> {
+                    // Fall through to unrestricted upsert requiring both create and update.
+                }
+            }
+        }
+        authorizeResource(principal, "datastore.entities.create", doc);
+        authorizeResource(principal, "datastore.entities.update", doc);
+    }
+
+    private static void authorizeAnyEntityMutation(String principal, String resourcePath) {
+        for (String action : List.of("datastore.entities.create", "datastore.entities.update", "datastore.entities.delete")) {
+            try {
+                authorizeResource(principal, action, resourcePath);
+                return;
+            } catch (SecurityException ignored) {
+            }
+        }
+        throw new SecurityException("Not allowed by policy");
     }
 
     private static void authorizeResource(String principal, String action, String resourcePath) {

@@ -25,8 +25,8 @@ public class PubsubRoles implements IamAuthorizationAdapter {
             "roles/pubsub.publisher", Set.of("pubsub.topics.publish"),
             "roles/pubsub.subscriber", Set.of("pubsub.subscriptions.consume", "pubsub.topics.attachSubscription"),
             "roles/pubsub.viewer", Set.of("pubsub.topics.get", "pubsub.topics.list", "pubsub.subscriptions.get", "pubsub.subscriptions.list"),
-            "roles/datastore.user", Set.of("datastore.entities.create", "datastore.entities.get", "datastore.entities.update", "datastore.entities.delete", "datastore.entities.list", "datastore.databases.listCollectionIds"),
-            "roles/datastore.viewer", Set.of("datastore.entities.get", "datastore.entities.list", "datastore.databases.listCollectionIds")
+            "roles/datastore.user", Set.of("datastore.entities.create", "datastore.entities.get", "datastore.entities.update", "datastore.entities.delete", "datastore.entities.list", "datastore.databases.get", "datastore.databases.listCollectionIds"),
+            "roles/datastore.viewer", Set.of("datastore.entities.get", "datastore.entities.list", "datastore.databases.get", "datastore.databases.listCollectionIds")
         );
     }
 }
