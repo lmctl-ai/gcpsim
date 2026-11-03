@@ -167,45 +167,255 @@ with tempfile.TemporaryDirectory(prefix='gcpsim-auth-') as directory:
     print('PASS: empty policies default deny; absent policies allow authenticated mapped operations')
 
     if exe.suffix == '.jar' and (exe.parent / 'app').is_dir():
-        probe = tmp / 'io/floci/gcp/services/firestore/CheckFirestorePagination.java'
-        probe.parent.mkdir(parents=True, exist_ok=True)
-        probe.write_text("""package io.floci.gcp.services.firestore;
-import com.google.firestore.v1.*;
-import io.floci.gcp.core.storage.InMemoryStorage;
-import io.floci.gcp.services.firestore.model.StoredDocument;
+        cp = os.pathsep.join([str(exe.parent / 'app/*'), str(exe.parent / 'lib/main/*'), str(exe.parent / 'lib/boot/*')])
+        probe = tmp / 'SimAuthProbe.java'
+        probe.write_text("""import com.google.firestore.v1.*;
+import com.google.protobuf.Empty;
+import io.grpc.*;
+import io.grpc.protobuf.ProtoUtils;
+import io.grpc.stub.ClientCalls;
+import io.grpc.stub.MetadataUtils;
 import io.grpc.stub.StreamObserver;
-import java.time.Instant;
-import java.util.*;
-public class CheckFirestorePagination {
-    static class Obs implements StreamObserver<ListDocumentsResponse> {
-        ListDocumentsResponse resp;
-        public void onNext(ListDocumentsResponse v) { resp = v; }
-        public void onError(Throwable t) { throw new RuntimeException(t); }
-        public void onCompleted() {}
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+
+public class SimAuthProbe {
+    static final String ROOT = "projects/gcpsim-local/databases/(default)/documents";
+    static final String FOREIGN = "projects/foreign-project/databases/(default)/documents";
+
+    static FirestoreGrpc.FirestoreBlockingStub stub(ManagedChannel c, String token) {
+        Metadata m = new Metadata();
+        if (token != null) {
+            m.put(Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER), "Bearer " + token);
+        }
+        return FirestoreGrpc.newBlockingStub(c)
+                .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(m))
+                .withDeadlineAfter(10, TimeUnit.SECONDS);
     }
-    public static void main(String[] args) {
-        String parent = "projects/p1/databases/(default)/documents";
-        FirestoreService svc = new FirestoreService(new InMemoryStorage<String, StoredDocument>());
-        FirestoreController ctl = new FirestoreController(svc);
-        for (String id : List.of("doc_c", "doc_a", "doc_d", "doc_b")) {
-            svc.applyWrite(Write.newBuilder().setUpdate(Document.newBuilder().setName(parent + "/col/" + id).build()).build(), Instant.now());
+
+    static FirestoreGrpc.FirestoreStub asyncStub(ManagedChannel c, String token) {
+        Metadata m = new Metadata();
+        if (token != null) {
+            m.put(Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER), "Bearer " + token);
         }
-        Obs p1 = new Obs();
-        ctl.listDocuments(ListDocumentsRequest.newBuilder().setParent(parent).setCollectionId("col").setPageSize(2).build(), p1);
-        List<String> names1 = p1.resp.getDocumentsList().stream().map(Document::getName).toList();
-        if (!names1.equals(List.of(parent + "/col/doc_a", parent + "/col/doc_b")) || !"doc_b".equals(p1.resp.getNextPageToken())) {
-            throw new AssertionError("page1=" + names1 + " next=" + p1.resp.getNextPageToken());
+        return FirestoreGrpc.newStub(c)
+                .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(m))
+                .withDeadlineAfter(10, TimeUnit.SECONDS);
+    }
+
+    static void seed(FirestoreGrpc.FirestoreBlockingStub a, String root, String col, String id) {
+        a.createDocument(CreateDocumentRequest.newBuilder()
+                .setParent(root)
+                .setCollectionId(col)
+                .setDocumentId(id)
+                .setDocument(Document.newBuilder().putFields("value", Value.newBuilder().setStringValue("private").build()))
+                .build());
+    }
+
+    static void expectStatus(Status.Code expected, Runnable fn, String label) {
+        try {
+            fn.run();
+            throw new AssertionError("Expected " + expected + " for " + label + ", but succeeded");
+        } catch (StatusRuntimeException e) {
+            if (e.getStatus().getCode() != expected) {
+                throw new AssertionError("Expected " + expected + " for " + label + ", got " + e.getStatus());
+            }
         }
-        Obs p2 = new Obs();
-        ctl.listDocuments(ListDocumentsRequest.newBuilder().setParent(parent).setCollectionId("col").setPageSize(2).setPageToken(p1.resp.getNextPageToken()).build(), p2);
-        List<String> names2 = p2.resp.getDocumentsList().stream().map(Document::getName).toList();
-        if (!names2.equals(List.of(parent + "/col/doc_c", parent + "/col/doc_d")) || !p2.resp.getNextPageToken().isEmpty()) {
-            throw new AssertionError("page2=" + names2 + " next=" + p2.resp.getNextPageToken());
+    }
+
+    public static void main(String[] args) throws Exception {
+        ManagedChannel c = ManagedChannelBuilder.forTarget(args[0]).usePlaintext().build();
+        try {
+            var admin = stub(c, "admin-token");
+            var local = stub(c, "local-token");
+            var update = stub(c, "update-token");
+            var bad = stub(c, "invalid-token");
+
+            seed(admin, FOREIGN, "secret", "foreign");
+            seed(admin, ROOT, "secret", "commit");
+            seed(admin, ROOT, "secret", "batch");
+            seed(admin, ROOT, "secret", "stream");
+            seed(admin, ROOT, "forbidden-col", "blocked-doc");
+            seed(admin, ROOT, "allowed-col", "ok-doc");
+
+            // Unauthenticated token rejected with UNAUTHENTICATED
+            expectStatus(Status.Code.UNAUTHENTICATED,
+                    () -> bad.getDocument(GetDocumentRequest.newBuilder().setName(ROOT + "/allowed-col/ok-doc").build()),
+                    "invalid bearer token");
+
+            // Allowed local project read succeeds, denied collection in local project fails with PERMISSION_DENIED
+            var okDoc = local.getDocument(GetDocumentRequest.newBuilder().setName(ROOT + "/allowed-col/ok-doc").build());
+            if (!okDoc.getName().endsWith("/allowed-col/ok-doc")) {
+                throw new AssertionError("Unexpected doc: " + okDoc.getName());
+            }
+            expectStatus(Status.Code.PERMISSION_DENIED,
+                    () -> local.getDocument(GetDocumentRequest.newBuilder().setName(ROOT + "/forbidden-col/blocked-doc").build()),
+                    "collection-specific deny");
+
+            // Cross-project read and write blocked with PERMISSION_DENIED
+            expectStatus(Status.Code.PERMISSION_DENIED,
+                    () -> local.getDocument(GetDocumentRequest.newBuilder().setName(FOREIGN + "/secret/foreign").build()),
+                    "cross-project getDocument");
+            expectStatus(Status.Code.PERMISSION_DENIED,
+                    () -> seed(local, FOREIGN, "secret", "foreign-write"),
+                    "cross-project createDocument");
+            expectStatus(Status.Code.PERMISSION_DENIED,
+                    () -> local.runQuery(RunQueryRequest.newBuilder().setParent(FOREIGN).build()).hasNext(),
+                    "cross-project runQuery");
+
+            // Direct delete, Commit delete, BatchWrite delete, and streaming Write delete blocked for update-only token
+            expectStatus(Status.Code.PERMISSION_DENIED,
+                    () -> update.deleteDocument(DeleteDocumentRequest.newBuilder().setName(ROOT + "/secret/commit").build()),
+                    "direct deleteDocument");
+            expectStatus(Status.Code.PERMISSION_DENIED,
+                    () -> update.commit(CommitRequest.newBuilder()
+                            .setDatabase("projects/gcpsim-local/databases/(default)")
+                            .addWrites(Write.newBuilder().setDelete(ROOT + "/secret/commit"))
+                            .build()),
+                    "commit delete");
+            expectStatus(Status.Code.PERMISSION_DENIED,
+                    () -> update.batchWrite(BatchWriteRequest.newBuilder()
+                            .setDatabase("projects/gcpsim-local/databases/(default)")
+                            .addWrites(Write.newBuilder().setDelete(ROOT + "/secret/batch"))
+                            .build()),
+                    "batchWrite delete");
+
+            CountDownLatch writeLatch = new CountDownLatch(1);
+            AtomicReference<Throwable> writeErr = new AtomicReference<>();
+            StreamObserver<WriteRequest> writeStream = asyncStub(c, "update-token").write(new StreamObserver<WriteResponse>() {
+                public void onNext(WriteResponse v) {}
+                public void onError(Throwable t) { writeErr.set(t); writeLatch.countDown(); }
+                public void onCompleted() { writeLatch.countDown(); }
+            });
+            writeStream.onNext(WriteRequest.newBuilder()
+                    .setDatabase("projects/gcpsim-local/databases/(default)")
+                    .addWrites(Write.newBuilder().setDelete(ROOT + "/secret/stream"))
+                    .build());
+            writeStream.onCompleted();
+            if (!writeLatch.await(5, TimeUnit.SECONDS) || !(writeErr.get() instanceof StatusRuntimeException sre)
+                    || sre.getStatus().getCode() != Status.Code.PERMISSION_DENIED) {
+                throw new AssertionError("Expected PERMISSION_DENIED on streaming Write delete, got " + writeErr.get());
+            }
+
+            // Verify all target documents survived forbidden delete attempts
+            for (String id : List.of("commit", "batch", "stream")) {
+                var doc = admin.getDocument(GetDocumentRequest.newBuilder().setName(ROOT + "/secret/" + id).build());
+                if (!doc.getName().endsWith("/" + id)) {
+                    throw new AssertionError("Document missing after forbidden delete: " + id);
+                }
+            }
+
+            // Listen and UnknownMethod fail closed with PERMISSION_DENIED
+            CountDownLatch listenLatch = new CountDownLatch(1);
+            AtomicReference<Throwable> listenErr = new AtomicReference<>();
+            StreamObserver<ListenRequest> listenStream = asyncStub(c, "admin-token").listen(new StreamObserver<ListenResponse>() {
+                public void onNext(ListenResponse v) {}
+                public void onError(Throwable t) { listenErr.set(t); listenLatch.countDown(); }
+                public void onCompleted() { listenLatch.countDown(); }
+            });
+            listenStream.onNext(ListenRequest.newBuilder().setDatabase("projects/gcpsim-local/databases/(default)").build());
+            listenStream.onCompleted();
+            if (!listenLatch.await(5, TimeUnit.SECONDS) || !(listenErr.get() instanceof StatusRuntimeException lsre)
+                    || lsre.getStatus().getCode() != Status.Code.PERMISSION_DENIED) {
+                throw new AssertionError("Expected PERMISSION_DENIED on Listen, got " + listenErr.get());
+            }
+
+            var unknown = MethodDescriptor.<Empty, Empty>newBuilder()
+                    .setType(MethodDescriptor.MethodType.UNARY)
+                    .setFullMethodName("google.firestore.v1.Firestore/UnknownMethod")
+                    .setRequestMarshaller(ProtoUtils.marshaller(Empty.getDefaultInstance()))
+                    .setResponseMarshaller(ProtoUtils.marshaller(Empty.getDefaultInstance()))
+                    .build();
+            Metadata m = new Metadata();
+            m.put(Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER), "Bearer admin-token");
+            Channel ch = ClientInterceptors.intercept(c, MetadataUtils.newAttachHeadersInterceptor(m));
+            expectStatus(Status.Code.PERMISSION_DENIED,
+                    () -> ClientCalls.blockingUnaryCall(ch, unknown, CallOptions.DEFAULT.withDeadlineAfter(5, TimeUnit.SECONDS), Empty.getDefaultInstance()),
+                    "UnknownMethod");
+
+            // Pagination, orderBy, bound pageToken, and pageSize validation
+            for (String id : List.of("a", "b", "c")) {
+                seed(admin, ROOT, "pages", id);
+                seed(admin, ROOT, "otherpages", id);
+            }
+            var p1 = admin.listDocuments(ListDocumentsRequest.newBuilder().setParent(ROOT).setCollectionId("pages").setPageSize(2).build());
+            var p2 = admin.listDocuments(ListDocumentsRequest.newBuilder().setParent(ROOT).setCollectionId("pages").setPageSize(2).setPageToken(p1.getNextPageToken()).build());
+            if (p1.getDocumentsCount() != 2 || p2.getDocumentsCount() != 1 || !p2.getNextPageToken().isEmpty()) {
+                throw new AssertionError("Unexpected pagination counts: " + p1.getDocumentsCount() + "+" + p2.getDocumentsCount());
+            }
+            if (!p1.getDocuments(0).getName().endsWith("/pages/a") || !p1.getDocuments(1).getName().endsWith("/pages/b")
+                    || !p2.getDocuments(0).getName().endsWith("/pages/c")) {
+                throw new AssertionError("Unexpected ascending document order");
+            }
+            expectStatus(Status.Code.INVALID_ARGUMENT,
+                    () -> admin.listDocuments(ListDocumentsRequest.newBuilder().setParent(ROOT).setCollectionId("otherpages").setPageSize(2).setPageToken(p1.getNextPageToken()).build()),
+                    "cross-collection pageToken replay");
+            expectStatus(Status.Code.INVALID_ARGUMENT,
+                    () -> admin.listDocuments(ListDocumentsRequest.newBuilder().setParent(ROOT).setCollectionId("pages").setPageSize(2).setOrderBy("__name__ desc").setPageToken(p1.getNextPageToken()).build()),
+                    "cross-order pageToken replay");
+            var desc1 = admin.listDocuments(ListDocumentsRequest.newBuilder().setParent(ROOT).setCollectionId("pages").setPageSize(2).setOrderBy("__name__ desc").build());
+            var desc2 = admin.listDocuments(ListDocumentsRequest.newBuilder().setParent(ROOT).setCollectionId("pages").setPageSize(2).setOrderBy("__name__ desc").setPageToken(desc1.getNextPageToken()).build());
+            if (!desc1.getDocuments(0).getName().endsWith("/pages/c") || !desc1.getDocuments(1).getName().endsWith("/pages/b")
+                    || !desc2.getDocuments(0).getName().endsWith("/pages/a") || !desc2.getNextPageToken().isEmpty()) {
+                throw new AssertionError("Unexpected descending document order");
+            }
+            expectStatus(Status.Code.INVALID_ARGUMENT,
+                    () -> admin.listDocuments(ListDocumentsRequest.newBuilder().setParent(ROOT).setCollectionId("pages").setPageSize(-1).build()),
+                    "negative pageSize");
+            expectStatus(Status.Code.INVALID_ARGUMENT,
+                    () -> admin.listDocuments(ListDocumentsRequest.newBuilder().setParent(ROOT).setCollectionId("pages").setOrderBy("unsupported_field").build()),
+                    "unsupported orderBy");
+        } finally {
+            c.shutdownNow().awaitTermination(5, TimeUnit.SECONDS);
         }
     }
 }
 """, encoding='utf-8')
-        cp = os.pathsep.join([str(exe.parent / 'app/*'), str(exe.parent / 'lib/main/*'), str(exe.parent / 'lib/boot/*')])
         subprocess.run([os.environ.get('JAVAC', 'javac'), '-cp', cp, '-d', str(tmp), str(probe)], check=True, timeout=30)
-        subprocess.run([os.environ.get('JAVA', 'java'), '-cp', os.pathsep.join([str(tmp), cp]), 'io.floci.gcp.services.firestore.CheckFirestorePagination'], check=True, timeout=30)
-        print('PASS: Firestore ListDocuments sorted pagination (pageSize, pageToken, nextPageToken)')
+        with socket.socket() as sock:
+            sock.bind(('127.0.0.1', 0))
+            grpc_port = sock.getsockname()[1]
+        grpc_auth = {
+            'tokens': {
+                'admin-token': 'user:admin@example.test',
+                'local-token': 'user:local@example.test',
+                'update-token': 'user:update@example.test',
+            },
+            'Statement': [
+                {'Effect': 'Allow', 'ActionGlob': '*', 'ResourceGlob': '*', 'Principal': 'user:admin@example.test'},
+                {'Effect': 'Allow', 'ActionGlob': '*', 'ResourceGlob': 'projects/gcpsim-local', 'Principal': 'user:local@example.test'},
+                {'Effect': 'Deny', 'ActionGlob': '*', 'ResourceGlob': 'projects/foreign-project*', 'Principal': 'user:local@example.test'},
+                {'Effect': 'Deny', 'ActionGlob': '*', 'ResourceGlob': 'projects/gcpsim-local/databases/(default)/documents/forbidden-col*', 'Principal': 'user:local@example.test'},
+                {'Effect': 'Allow', 'Action': 'datastore.entities.update', 'ResourceGlob': 'projects/gcpsim-local', 'Principal': 'user:update@example.test'},
+                {'Effect': 'Deny', 'Action': 'datastore.entities.delete', 'ResourceGlob': '*', 'Principal': 'user:update@example.test'},
+            ],
+        }
+        grpc_auth_path = tmp / 'grpc-auth.json'
+        grpc_auth_path.write_text(json.dumps(grpc_auth), encoding='utf-8')
+        with (tmp / 'grpc-server.log').open('w', encoding='utf-8') as log:
+            server = subprocess.Popen(cmd + ['serve', '--port', str(grpc_port), '--auth', 'enforce', '--auth-config', str(grpc_auth_path)],
+                                      env=env, cwd=tmp, stdout=log, stderr=log)
+            try:
+                for _ in range(240):
+                    if server.poll() is not None:
+                        raise AssertionError('gRPC server exited before readiness')
+                    try:
+                        with urllib.request.urlopen(f'http://127.0.0.1:{grpc_port}/health', timeout=2) as r:
+                            if r.status == 200:
+                                break
+                    except OSError:
+                        time.sleep(.25)
+                else:
+                    raise AssertionError('gRPC server readiness timeout')
+                subprocess.run([os.environ.get('JAVA', 'java'), '-cp', os.pathsep.join([str(tmp), cp]),
+                                'SimAuthProbe', f'127.0.0.1:{grpc_port}'], check=True, timeout=60)
+            finally:
+                server.terminate()
+                try:
+                    server.wait(timeout=30)
+                except subprocess.TimeoutExpired:
+                    server.kill()
+                    server.wait(timeout=10)
+        print('PASS: Firestore gRPC resource/batch/stream auth enforcement and bound ListDocuments pagination/orderBy')

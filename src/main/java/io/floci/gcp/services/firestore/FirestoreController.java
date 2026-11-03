@@ -45,20 +45,27 @@ import com.google.protobuf.ByteString;
 import com.google.protobuf.Empty;
 import com.google.protobuf.Timestamp;
 import com.google.rpc.Status;
+import ai.lmctl.gcpsim.BearerGuard;
+import io.floci.gcp.core.common.GcpException;
 import io.floci.gcp.core.common.GcpGrpcController;
 import io.floci.gcp.services.firestore.model.StoredDocument;
 import io.floci.gcp.services.firestore.model.StoredValue;
 import io.grpc.stub.StreamObserver;
 import org.jboss.logging.Logger;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.Base64;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 
 public class FirestoreController extends FirestoreGrpc.FirestoreImplBase {
 
     private static final Logger LOG = Logger.getLogger(FirestoreController.class);
+    private static final int DEFAULT_LIST_PAGE_SIZE = 300;
+    private static final int MAX_LIST_PAGE_SIZE = 1000;
 
     private final FirestoreService service;
 
@@ -70,6 +77,7 @@ public class FirestoreController extends FirestoreGrpc.FirestoreImplBase {
     public void commit(CommitRequest request, StreamObserver<CommitResponse> responseObserver) {
         LOG.debugf("commit database=%s writes=%d", request.getDatabase(), request.getWritesCount());
         try {
+            BearerGuard.authorizeFirestoreGrpc("Commit", request);
             Instant commitTime = Instant.now();
             CommitResponse.Builder response = CommitResponse.newBuilder()
                     .setCommitTime(toTimestamp(commitTime.toString()));
@@ -96,6 +104,7 @@ public class FirestoreController extends FirestoreGrpc.FirestoreImplBase {
     public void getDocument(GetDocumentRequest request, StreamObserver<Document> responseObserver) {
         LOG.debugf("getDocument name=%s", request.getName());
         try {
+            BearerGuard.authorizeFirestoreGrpc("GetDocument", request);
             Optional<StoredDocument> stored = service.getDocument(request.getName());
             if (!request.getTransaction().isEmpty()) {
                 service.recordTransactionRead(request.getTransaction().toByteArray(), request.getName(),
@@ -116,6 +125,7 @@ public class FirestoreController extends FirestoreGrpc.FirestoreImplBase {
             StreamObserver<BatchGetDocumentsResponse> responseObserver) {
         LOG.debugf("batchGetDocuments database=%s docs=%d", request.getDatabase(), request.getDocumentsCount());
         try {
+            BearerGuard.authorizeFirestoreGrpc("BatchGetDocuments", request);
             Instant readTime = Instant.now();
             ByteString txId = request.getTransaction();
             boolean newTransaction = request.hasNewTransaction();
@@ -159,6 +169,7 @@ public class FirestoreController extends FirestoreGrpc.FirestoreImplBase {
     public void runQuery(RunQueryRequest request, StreamObserver<RunQueryResponse> responseObserver) {
         LOG.debugf("runQuery parent=%s", request.getParent());
         try {
+            BearerGuard.authorizeFirestoreGrpc("RunQuery", request);
             Instant readTime = Instant.now();
             ByteString txId = request.getTransaction();
             if (request.hasNewTransaction()) {
@@ -198,6 +209,7 @@ public class FirestoreController extends FirestoreGrpc.FirestoreImplBase {
             StreamObserver<BeginTransactionResponse> responseObserver) {
         LOG.debugf("beginTransaction database=%s", request.getDatabase());
         try {
+            BearerGuard.authorizeFirestoreGrpc("BeginTransaction", request);
             byte[] txId = service.beginTransaction();
             responseObserver.onNext(BeginTransactionResponse.newBuilder()
                     .setTransaction(ByteString.copyFrom(txId))
@@ -212,40 +224,92 @@ public class FirestoreController extends FirestoreGrpc.FirestoreImplBase {
     @Override
     public void rollback(RollbackRequest request, StreamObserver<Empty> responseObserver) {
         LOG.debugf("rollback database=%s", request.getDatabase());
-        service.rollback(request.getTransaction().toByteArray());
-        responseObserver.onNext(Empty.getDefaultInstance());
-        responseObserver.onCompleted();
+        try {
+            BearerGuard.authorizeFirestoreGrpc("Rollback", request);
+            service.rollback(request.getTransaction().toByteArray());
+            responseObserver.onNext(Empty.getDefaultInstance());
+            responseObserver.onCompleted();
+        } catch (Exception e) {
+            LOG.warnf("rollback failed: %s", e.getMessage());
+            GcpGrpcController.grpcError(responseObserver, e);
+        }
     }
 
     @Override
     public void listDocuments(ListDocumentsRequest request, StreamObserver<ListDocumentsResponse> responseObserver) {
         LOG.debugf("listDocuments parent=%s collection=%s", request.getParent(), request.getCollectionId());
         try {
-            String prefix = request.getParent() + "/" + request.getCollectionId() + "/";
-            List<StoredDocument> docs = service.runQuery(request.getParent(),
+            BearerGuard.authorizeFirestoreGrpc("ListDocuments", request);
+            String parent = request.getParent();
+            String collectionId = request.getCollectionId();
+            if (parent.isBlank() || !parent.startsWith("projects/") || collectionId.isBlank() || collectionId.contains("/")) {
+                throw GcpException.invalidArgument("parent and collectionId are required");
+            }
+            int requestedPageSize = request.getPageSize();
+            if (requestedPageSize < 0 || requestedPageSize > MAX_LIST_PAGE_SIZE) {
+                throw GcpException.invalidArgument("Invalid pageSize: " + requestedPageSize);
+            }
+            int pageSize = requestedPageSize == 0 ? DEFAULT_LIST_PAGE_SIZE : requestedPageSize;
+
+            String rawOrder = request.getOrderBy().trim();
+            boolean descending;
+            String canonicalOrder;
+            String normalizedOrder = rawOrder.replaceAll("\\s+", " ").toLowerCase(Locale.ROOT);
+            if (normalizedOrder.isEmpty() || normalizedOrder.equals("__name__")
+                    || normalizedOrder.equals("__name__ asc") || normalizedOrder.equals("__name__ ascending")) {
+                descending = false;
+                canonicalOrder = "__name__ asc";
+            } else if (normalizedOrder.equals("__name__ desc") || normalizedOrder.equals("__name__ descending")) {
+                descending = true;
+                canonicalOrder = "__name__ desc";
+            } else {
+                throw GcpException.invalidArgument("Unsupported orderBy for ListDocuments: " + rawOrder);
+            }
+
+            String prefix = parent + "/" + collectionId + "/";
+            Comparator<StoredDocument> cmp = Comparator.comparing(StoredDocument::getName);
+            if (descending) {
+                cmp = cmp.reversed();
+            }
+
+            List<StoredDocument> docs = service.runQuery(parent,
                     StructuredQuery.newBuilder()
                             .addFrom(StructuredQuery.CollectionSelector.newBuilder()
-                                    .setCollectionId(request.getCollectionId())
+                                    .setCollectionId(collectionId)
                                     .build())
                             .build())
                     .stream()
-                    .sorted(Comparator.comparing(StoredDocument::getName))
+                    .sorted(cmp)
                     .toList();
 
             String token = request.getPageToken();
             if (!token.isEmpty()) {
-                String fullToken = token.startsWith(prefix) ? token : prefix + token;
+                String decoded;
+                try {
+                    decoded = new String(Base64.getUrlDecoder().decode(token), StandardCharsets.UTF_8);
+                } catch (IllegalArgumentException e) {
+                    throw GcpException.invalidArgument("Invalid pageToken");
+                }
+                String[] parts = decoded.split("\n", -1);
+                if (parts.length != 4 || !parts[0].equals(parent) || !parts[1].equals(collectionId)
+                        || !parts[2].equals(canonicalOrder) || !parts[3].startsWith(prefix)
+                        || parts[3].substring(prefix.length()).isEmpty()) {
+                    throw GcpException.invalidArgument("pageToken does not match request parameters");
+                }
+                String cursorName = parts[3];
+                boolean desc = descending;
                 docs = docs.stream()
-                        .filter(d -> d.getName().compareTo(fullToken) > 0)
+                        .filter(d -> desc ? d.getName().compareTo(cursorName) < 0 : d.getName().compareTo(cursorName) > 0)
                         .toList();
             }
 
-            int pageSize = request.getPageSize();
             String nextToken = "";
-            if (pageSize > 0 && docs.size() > pageSize) {
+            if (docs.size() > pageSize) {
                 docs = docs.subList(0, pageSize);
                 String lastName = docs.get(docs.size() - 1).getName();
-                nextToken = lastName.startsWith(prefix) ? lastName.substring(prefix.length()) : lastName;
+                String rawNext = parent + "\n" + collectionId + "\n" + canonicalOrder + "\n" + lastName;
+                nextToken = Base64.getUrlEncoder().withoutPadding()
+                        .encodeToString(rawNext.getBytes(StandardCharsets.UTF_8));
             }
 
             ListDocumentsResponse.Builder resp = ListDocumentsResponse.newBuilder();
@@ -265,6 +329,7 @@ public class FirestoreController extends FirestoreGrpc.FirestoreImplBase {
     public void updateDocument(UpdateDocumentRequest request, StreamObserver<Document> responseObserver) {
         LOG.debugf("updateDocument name=%s", request.getDocument().getName());
         try {
+            BearerGuard.authorizeFirestoreGrpc("UpdateDocument", request);
             Write.Builder write = Write.newBuilder()
                     .setUpdate(request.getDocument());
             if (request.hasUpdateMask()) {
@@ -288,6 +353,7 @@ public class FirestoreController extends FirestoreGrpc.FirestoreImplBase {
     public void deleteDocument(DeleteDocumentRequest request, StreamObserver<Empty> responseObserver) {
         LOG.debugf("deleteDocument name=%s", request.getName());
         try {
+            BearerGuard.authorizeFirestoreGrpc("DeleteDocument", request);
             Write.Builder write = Write.newBuilder().setDelete(request.getName());
             if (request.hasCurrentDocument()) {
                 write.setCurrentDocument(request.getCurrentDocument());
@@ -305,6 +371,7 @@ public class FirestoreController extends FirestoreGrpc.FirestoreImplBase {
     public void createDocument(CreateDocumentRequest request, StreamObserver<Document> responseObserver) {
         LOG.debugf("createDocument parent=%s collection=%s", request.getParent(), request.getCollectionId());
         try {
+            BearerGuard.authorizeFirestoreGrpc("CreateDocument", request);
             String docId = request.getDocumentId().isEmpty()
                     ? java.util.UUID.randomUUID().toString()
                     : request.getDocumentId();
@@ -328,6 +395,7 @@ public class FirestoreController extends FirestoreGrpc.FirestoreImplBase {
             StreamObserver<ListCollectionIdsResponse> responseObserver) {
         LOG.debugf("listCollectionIds parent=%s", request.getParent());
         try {
+            BearerGuard.authorizeFirestoreGrpc("ListCollectionIds", request);
             List<String> ids = service.listCollectionIds(request.getParent());
             responseObserver.onNext(ListCollectionIdsResponse.newBuilder()
                     .addAllCollectionIds(ids).build());
@@ -342,6 +410,7 @@ public class FirestoreController extends FirestoreGrpc.FirestoreImplBase {
     public void batchWrite(BatchWriteRequest request, StreamObserver<BatchWriteResponse> responseObserver) {
         LOG.debugf("batchWrite database=%s writes=%d", request.getDatabase(), request.getWritesCount());
         try {
+            BearerGuard.authorizeFirestoreGrpc("BatchWrite", request);
             Instant commitTime = Instant.now();
             BatchWriteResponse.Builder resp = BatchWriteResponse.newBuilder();
             // BatchWrite is non-atomic: each write succeeds or fails independently
@@ -377,6 +446,7 @@ public class FirestoreController extends FirestoreGrpc.FirestoreImplBase {
             StreamObserver<RunAggregationQueryResponse> responseObserver) {
         LOG.debugf("runAggregationQuery parent=%s", request.getParent());
         try {
+            BearerGuard.authorizeFirestoreGrpc("RunAggregationQuery", request);
             Instant readTime = Instant.now();
             AggregationResult.Builder agg = AggregationResult.newBuilder();
             if (request.hasStructuredAggregationQuery()) {
@@ -404,15 +474,26 @@ public class FirestoreController extends FirestoreGrpc.FirestoreImplBase {
     @Override
     public void partitionQuery(PartitionQueryRequest request,
             StreamObserver<PartitionQueryResponse> responseObserver) {
-        responseObserver.onNext(PartitionQueryResponse.getDefaultInstance());
-        responseObserver.onCompleted();
+        try {
+            BearerGuard.authorizeFirestoreGrpc("PartitionQuery", request);
+            responseObserver.onNext(PartitionQueryResponse.getDefaultInstance());
+            responseObserver.onCompleted();
+        } catch (Exception e) {
+            GcpGrpcController.grpcError(responseObserver, e);
+        }
     }
 
     @Override
     public StreamObserver<WriteRequest> write(StreamObserver<WriteResponse> responseObserver) {
         return new StreamObserver<>() {
+            private volatile boolean failed = false;
+
             public void onNext(WriteRequest req) {
+                if (failed) {
+                    return;
+                }
                 try {
+                    BearerGuard.authorizeFirestoreGrpc("Write", req);
                     Instant now = Instant.now();
                     WriteResponse.Builder resp = WriteResponse.newBuilder()
                             .setStreamId(req.getStreamId())
@@ -427,12 +508,17 @@ public class FirestoreController extends FirestoreGrpc.FirestoreImplBase {
                     }
                     responseObserver.onNext(resp.build());
                 } catch (Exception e) {
+                    failed = true;
                     LOG.warnf("write stream error: %s", e.getMessage());
                     responseObserver.onError(GcpGrpcController.grpcException(e));
                 }
             }
             public void onError(Throwable t) { LOG.debugf("write stream closed by client: %s", t.getMessage()); }
-            public void onCompleted() { responseObserver.onCompleted(); }
+            public void onCompleted() {
+                if (!failed) {
+                    responseObserver.onCompleted();
+                }
+            }
         };
     }
 
@@ -440,9 +526,14 @@ public class FirestoreController extends FirestoreGrpc.FirestoreImplBase {
     public StreamObserver<ListenRequest> listen(StreamObserver<ListenResponse> responseObserver) {
         return new StreamObserver<>() {
             private volatile boolean initialized = false;
+            private volatile boolean failed = false;
 
             public void onNext(ListenRequest req) {
+                if (failed) {
+                    return;
+                }
                 try {
+                    BearerGuard.authorizeFirestoreGrpc("Listen", req);
                     if (req.hasAddTarget() && !initialized) {
                         initialized = true;
                         Target target = req.getAddTarget();
@@ -482,6 +573,7 @@ public class FirestoreController extends FirestoreGrpc.FirestoreImplBase {
                                 .build());
                     }
                 } catch (Exception e) {
+                    failed = true;
                     LOG.warnf("listen error: %s", e.getMessage());
                     responseObserver.onError(GcpGrpcController.grpcException(e));
                 }
@@ -492,7 +584,9 @@ public class FirestoreController extends FirestoreGrpc.FirestoreImplBase {
             }
 
             public void onCompleted() {
-                responseObserver.onCompleted();
+                if (!failed) {
+                    responseObserver.onCompleted();
+                }
             }
         };
     }
