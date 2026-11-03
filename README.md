@@ -124,7 +124,7 @@ Open mode remains the default. Use `--auth enforce --auth-config auth.json` (or
 `SIM_AUTH=enforce` and `SIM_AUTH_CONFIG`) for dummy OAuth bearer validation and
 resource permissions. See [auth configuration, mapping, and limits](docs/auth.md).
 
-The auth suite also runs real GCS and Pub/Sub operations through **lmgcp v0.1.9**.
+The auth suite also runs real GCS and Pub/Sub operations through **lmgcp v0.1.17**.
 `client.lock.json` pins its source commit and all five release checksums. To run it:
 
 ```

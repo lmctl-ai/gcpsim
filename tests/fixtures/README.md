@@ -7,6 +7,5 @@ controlled invocation failure. Resources live in disposable simulator processes;
 names use lmgcp's required prefix.
 
 The scripts run through the current lmscript command builder. They do not write
-bytecode files; the `run_lmcode` result is the fixture's output. The pinned
-lmgcp release used by CI must expose the current invocation manifest and
-terminal result frame protocol before these host calls run.
+bytecode files; the `run_lmcode` result is the fixture's output. CI pins lmgcp v0.1.17, which exposes the
+invocation manifest and terminal result frame protocol used by these host calls.

@@ -1,5 +1,5 @@
 # The HTTP denial is returned as a controlled invocation result.
-program = _lmcode_ cli="lmgcp" install="github:lmctl-ai/lmgcp@latest";
+program = _lmcode_ cli="lmgcp" install="github:lmctl-ai/lmgcp@v0.1.17";
   let bucket = gcp.storage_get_bucket("lmgcp-integration");
   $return = bucket.name();
 end _lmcode_

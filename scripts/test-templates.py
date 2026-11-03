@@ -17,10 +17,8 @@ ROOT = Path(__file__).resolve().parents[1]
 exe, client = (Path(arg).resolve() for arg in sys.argv[1:3])
 engine = os.environ.get('LMSCRIPT_BIN', shutil.which('lmscript'))
 assert engine, 'Set LMSCRIPT_BIN to a current lmscript compiler'
-schema_probe = subprocess.run([str(client), '--lmcode-schema', '--json'], capture_output=True, text=True)
-if schema_probe.returncode != 0:
-    print('SKIP run_lmcode template client: pinned lmgcp does not expose the current lmcode host protocol')
-    sys.exit(0)
+schema_probe = subprocess.run([str(client), '--lmcode-schema', '--json'], capture_output=True, text=True, encoding='utf-8')
+assert schema_probe.returncode == 0 and schema_probe.stdout.strip(), ('pinned lmgcp client lacks the current lmcode host protocol', schema_probe.returncode, schema_probe.stderr)
 cmd = [os.environ.get('JAVA', 'java'), '-Dfile.encoding=UTF-8', '-jar', str(exe)] if exe.suffix == '.jar' else [str(exe)]
 env = {k: v for k, v in os.environ.items() if not k.startswith(('SIM_AUTH', 'FLOCI_GCP_', 'QUARKUS_', 'LMGCP_', 'GOOGLE_', 'CLOUDSDK_'))}
 env.update(PATH=str(client.parent) + os.pathsep + env['PATH'], LMGCP_BINARY=str(client), LMGCP_PROJECT='gcpsim-local')

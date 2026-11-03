@@ -1,5 +1,5 @@
 # Same-input integration fixture: run the real lmgcp command builder against gcpsim.
-program = _lmcode_ cli="lmgcp" install="github:lmctl-ai/lmgcp@latest";
+program = _lmcode_ cli="lmgcp" install="github:lmctl-ai/lmgcp@v0.1.17";
   let bucket = gcp.storage_create_bucket("lmgcp-integration", "US", "STANDARD");
   let put = gcp.storage_put_object("lmgcp-integration", "hello.txt", "gcpsim-roundtrip", "text/plain");
   let content = gcp.storage_read_object("lmgcp-integration", "hello.txt");

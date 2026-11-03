@@ -17,9 +17,9 @@ exe = Path(sys.argv[1]).resolve()
 client = Path(sys.argv[2]).resolve() if len(sys.argv) > 2 else None
 if client is not None:
     help_out = subprocess.run([str(client), '--help'], capture_output=True, text=True, encoding='utf-8').stdout
-    if '--lmcode' not in help_out:
-        print('SKIP: pinned lmgcp client does not expose the current lmcode host protocol; client integration skipped')
-        client = None
+    assert '--lmcode' in help_out, 'pinned lmgcp client lacks the current lmcode host protocol'
+    schema = subprocess.run([str(client), '--lmcode-schema', '--json'], capture_output=True, text=True, encoding='utf-8')
+    assert schema.returncode == 0 and schema.stdout.strip(), ('pinned lmgcp client lacks lmcode schema support', schema.returncode, schema.stderr)
 engine = os.environ.get('LMSCRIPT_BIN') or shutil.which('lmscript')
 if client is not None:
     assert engine, 'LMSCRIPT_BIN is required for run_lmcode client checks'

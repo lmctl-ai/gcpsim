@@ -21,20 +21,18 @@ set `JAVA` if needed. Windows uses the `.exe` simulator/client paths; the harnes
 invokes compiler JavaScript entrypoints with Node, avoiding shell wrappers.
 
 The harness owns two temporary servers: open mode without credentials, then
-bearer-enforced mode using the generated policy. When the pinned lmgcp release
-supports invocation manifests, the examples execute through `run_lmcode` and
-the harness independently asserts HTTP statuses, bucket labels, object
+bearer-enforced mode using the generated policy. The pinned lmgcp release supports invocation manifests. The examples execute
+through `run_lmcode`, and the harness independently asserts HTTP statuses, bucket labels, object
 metadata/content, and published message data/attributes. The project storage
 binding permits the round trip; explicit deny overrides it for deletion and a
-separate bucket read. Until the upgraded lmgcp release is pinned, the harness
-reports an explicit skip for only the lmcode client invocation. Temporary files
-and servers are cleaned up.
+separate bucket read. The harness fails if the pinned client lacks the protocol
+or any resource assertion fails. Temporary files and servers are cleaned up.
 
 ## lmcode invocation
 
 `templates-client.lms` reads the generated JSON fixture, constructs one typed
 lmcode program, and executes it once through `run_lmcode`. It writes no bytecode
-artifact. The host release pin is updated after the lmgcp protocol job reports.
+artifact. The SDK install is pinned to lmgcp v0.1.17.
 
 The IAM configuration is a local emulator fixture, not a production GCP policy.
 Only dummy bearer credentials are used. See [auth scope](../docs/auth.md).

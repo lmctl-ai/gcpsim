@@ -6,7 +6,7 @@ object = context.object;
 pubsub = context.pubsub;
 body = json_stringify(object.content);
 if (ARGV[0] == "run") {
-  program = _lmcode_ cli="lmgcp" install="github:lmctl-ai/lmgcp@latest";
+  program = _lmcode_ cli="lmgcp" install="github:lmctl-ai/lmgcp@v0.1.17";
     let bucket = gcp.storage_create_bucket(${create.name}, ${create.location}, ${create.storageClass});
     if (bucket.name() != ${create.name}) { assert_close(0.0, 1.0, 0.0); }
     let labels = str_map().set("wave", ${create.labels.wave});
@@ -28,7 +28,7 @@ end _lmcode_
   println("PASS templates run");
   println(json_stringify(result.result));
 } else if (ARGV[0] == "denied") {
-  program = _lmcode_ cli="lmgcp" install="github:lmctl-ai/lmgcp@latest";
+  program = _lmcode_ cli="lmgcp" install="github:lmctl-ai/lmgcp@v0.1.17";
     let bucket = gcp.storage_get_bucket("lmgcp-denied");
     $return = bucket.name();
 end _lmcode_
