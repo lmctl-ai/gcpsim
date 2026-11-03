@@ -23,6 +23,7 @@ if client is not None:
 engine = os.environ.get('LMSCRIPT_BIN') or shutil.which('lmscript')
 if client is not None:
     assert engine, 'LMSCRIPT_BIN is required for run_lmcode client checks'
+    engine = [shutil.which('node') or 'node', engine]
 cmd = [os.environ.get('JAVA', 'java'), '-Dfile.encoding=UTF-8', '-jar', str(exe)] if exe.suffix == '.jar' else [str(exe)]
 env = {k: v for k, v in os.environ.items() if not k.startswith(('SIM_AUTH', 'FLOCI_GCP_', 'QUARKUS_', 'LMGCP_', 'GOOGLE_', 'CLOUDSDK_'))}
 TOKEN = 'dummy-private-token'
@@ -73,7 +74,7 @@ with tempfile.TemporaryDirectory(prefix='gcpsim-auth-') as directory:
             if token is not None:
                 ce['LMGCP_ACCESS_TOKEN'] = token
             source = ROOT / 'tests/fixtures' / fixture
-            result = subprocess.run([engine, str(source)], cwd=tmp, env=ce, capture_output=True, text=True, encoding='utf-8', timeout=90)
+            result = subprocess.run(engine + [str(source)], cwd=tmp, env=ce, capture_output=True, text=True, encoding='utf-8', timeout=90)
             combined = result.stdout + result.stderr
             assert TOKEN not in combined and 'wrong-private-token' not in combined, combined
             envelope = json.loads([line for line in result.stdout.splitlines() if line.strip()][-1])

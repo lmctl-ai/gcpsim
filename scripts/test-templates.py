@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 exe, client = (Path(arg).resolve() for arg in sys.argv[1:3])
 engine = os.environ.get('LMSCRIPT_BIN', shutil.which('lmscript'))
 assert engine, 'Set LMSCRIPT_BIN to a current lmscript compiler'
+engine = [shutil.which('node') or 'node', engine]
 schema_probe = subprocess.run([str(client), '--lmcode-schema', '--json'], capture_output=True, text=True, encoding='utf-8')
 assert schema_probe.returncode == 0 and schema_probe.stdout.strip(), ('pinned lmgcp client lacks the current lmcode host protocol', schema_probe.returncode, schema_probe.stderr)
 cmd = [os.environ.get('JAVA', 'java'), '-Dfile.encoding=UTF-8', '-jar', str(exe)] if exe.suffix == '.jar' else [str(exe)]
@@ -28,7 +29,7 @@ with tempfile.TemporaryDirectory(prefix='gcpsim-templates-') as directory:
 
     def script(stage, run_env):
         source = ROOT / 'examples' / ('templates.lms' if stage == 'prepare' else 'templates-client.lms')
-        args = [engine, str(source)] + ([] if stage == 'prepare' else [stage])
+        args = engine + [str(source)] + ([] if stage == 'prepare' else [stage])
         result = subprocess.run(args, cwd=tmp,
                                 env=run_env, capture_output=True, text=True, encoding='utf-8', timeout=120)
         assert result.returncode == 0 and f'PASS templates {stage}' in result.stdout, result.stdout + result.stderr
