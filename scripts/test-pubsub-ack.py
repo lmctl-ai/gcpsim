@@ -74,8 +74,11 @@ with tempfile.TemporaryDirectory(prefix='gcpsim-ack-') as tmp:
                 assert status == 400 and err['error']['status'] == 'INVALID_ARGUMENT', (status, err)
             # Stale/already-acked well-formed ids are accepted like upstream acknowledge.
             assert call(base, {'ackIds': [ack2], 'ackDeadlineSeconds': 10}, 'POST')[0] == 200
-            # Mixed valid + unknown ids is accepted; unknown ids are ignored.
-            assert call(base, {'ackIds': [ack2, 'bogus'], 'ackDeadlineSeconds': 10}, 'POST')[0] == 200
+            # Mixed valid + unknown well-formed (UUID) ids is accepted; unknown ids are ignored.
+            assert call(base, {'ackIds': [ack2, '11111111-2222-3333-4444-555555555555'], 'ackDeadlineSeconds': 10}, 'POST')[0] == 200
+            # Malformed ids (not issued by this simulator) are rejected, and nothing is applied.
+            status, err = call(base, {'ackIds': [ack2, 'bogus'], 'ackDeadlineSeconds': 10}, 'POST')
+            assert status == 400 and err['error']['status'] == 'INVALID_ARGUMENT', (status, err)
             print('PASS: modifyAckDeadline 0 redelivery, 30s hide, bounds and invalid ackId errors')
         except BaseException:
             log.flush()

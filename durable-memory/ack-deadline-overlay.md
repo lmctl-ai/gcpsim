@@ -26,7 +26,7 @@ immediately before `acknowledge`:
 
 - missing subscription -> `GcpException.notFound("Subscription not found: ...")`
 - `ackDeadlineSeconds < 0 || > 600` -> `INVALID_ARGUMENT`
-- unknown/expired ack ID -> `INVALID_ARGUMENT` ("Invalid ack ID")
+- malformed ack ID (not a UUID issued by the simulator) -> `INVALID_ARGUMENT` ("Invalid ack ID"); well-formed stale/unknown ids -> accepted (200)
 - deadline `0` removes the ack ID from the in-flight `delivered` map and appends
   the original message to the subscription queue, so the next pull redelivers it
 - deadline `1..600` leaves the delivery in flight under the existing model

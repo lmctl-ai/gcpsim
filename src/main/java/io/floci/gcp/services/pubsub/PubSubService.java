@@ -643,6 +643,16 @@ public class PubSubService {
 
     // ── Acknowledge ────────────────────────────────────────────────────────────
 
+    /** Ack ids issued by this simulator are UUIDs; anything else is malformed (real Pub/Sub returns INVALID_ARGUMENT), while well-formed stale ids are accepted. */
+    private static boolean isWellFormedAckId(String ackId) {
+        try {
+            UUID.fromString(ackId);
+            return true;
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
+    }
+
     public void modifyAckDeadline(String subName, List<String> ackIds, int ackDeadlineSeconds) {
         LOG.debugf("modifyAckDeadline subscription=%s ackIds=%d deadline=%d",
                 subName, ackIds.size(), ackDeadlineSeconds);
@@ -660,7 +670,7 @@ public class PubSubService {
         // well-formed ids are accepted (upstream acknowledge is idempotent);
         // only malformed ids are rejected by the REST controller.
         for (String ackId : ackIds) {
-            if (ackId == null || ackId.isBlank()) {
+            if (ackId == null || ackId.isBlank() || !isWellFormedAckId(ackId)) {
                 throw GcpException.invalidArgument("Invalid ack ID");
             }
         }
