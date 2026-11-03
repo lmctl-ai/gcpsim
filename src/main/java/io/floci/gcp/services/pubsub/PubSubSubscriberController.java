@@ -1,3 +1,5 @@
+/* modified from floci-gcp 0.11.0 0fa563c603c1876a09b050ffdce0d96bac00fedc
+   See durable-memory/ack-deadline-overlay.md and overlay.lock.json. */
 package io.floci.gcp.services.pubsub;
 
 import com.google.protobuf.Empty;
