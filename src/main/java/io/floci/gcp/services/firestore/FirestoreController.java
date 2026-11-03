@@ -170,6 +170,7 @@ public class FirestoreController extends FirestoreGrpc.FirestoreImplBase {
         LOG.debugf("runQuery parent=%s", request.getParent());
         try {
             BearerGuard.authorizeFirestoreGrpc("RunQuery", request);
+            List<StoredDocument> results = authorizeAndRunQuery(request.getParent(), request.getStructuredQuery());
             Instant readTime = Instant.now();
             ByteString txId = request.getTransaction();
             if (request.hasNewTransaction()) {
@@ -180,7 +181,6 @@ public class FirestoreController extends FirestoreGrpc.FirestoreImplBase {
                         .setTransaction(txId)
                         .build());
             }
-            List<StoredDocument> results = service.runQuery(request.getParent(), request.getStructuredQuery());
 
             for (StoredDocument doc : results) {
                 if (!txId.isEmpty()) {
@@ -272,7 +272,7 @@ public class FirestoreController extends FirestoreGrpc.FirestoreImplBase {
                 cmp = cmp.reversed();
             }
 
-            List<StoredDocument> docs = service.runQuery(parent,
+            List<StoredDocument> docs = authorizeAndRunQuery(parent,
                     StructuredQuery.newBuilder()
                             .addFrom(StructuredQuery.CollectionSelector.newBuilder()
                                     .setCollectionId(collectionId)
@@ -451,9 +451,10 @@ public class FirestoreController extends FirestoreGrpc.FirestoreImplBase {
             AggregationResult.Builder agg = AggregationResult.newBuilder();
             if (request.hasStructuredAggregationQuery()) {
                 StructuredAggregationQuery saq = request.getStructuredAggregationQuery();
-                long count = service.countDocuments(request.getParent(),
-                        saq.hasStructuredQuery() ? saq.getStructuredQuery()
-                                : com.google.firestore.v1.StructuredQuery.getDefaultInstance());
+                StructuredQuery sq = saq.hasStructuredQuery()
+                        ? saq.getStructuredQuery()
+                        : com.google.firestore.v1.StructuredQuery.getDefaultInstance();
+                long count = authorizeAndRunQuery(request.getParent(), sq).size();
                 for (StructuredAggregationQuery.Aggregation aggregation : saq.getAggregationsList()) {
                     String alias = aggregation.getAlias().isEmpty() ? "field_1" : aggregation.getAlias();
                     agg.putAggregateFields(alias,
@@ -592,6 +593,23 @@ public class FirestoreController extends FirestoreGrpc.FirestoreImplBase {
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────────
+
+    private List<StoredDocument> authorizeAndRunQuery(String parent, StructuredQuery query) {
+        if (query.getFromCount() > 1) {
+            throw GcpException.invalidArgument("StructuredQuery supports at most one collection selector");
+        }
+        StructuredQuery scopeQuery = StructuredQuery.newBuilder()
+                .addAllFrom(query.getFromList())
+                .build();
+        for (StoredDocument doc : service.runQuery(parent, scopeQuery)) {
+            BearerGuard.authorizeFirestoreDocumentRead(doc.getName());
+        }
+        List<StoredDocument> results = service.runQuery(parent, query);
+        for (StoredDocument doc : results) {
+            BearerGuard.authorizeFirestoreDocumentRead(doc.getName());
+        }
+        return results;
+    }
 
     private static Document toProto(StoredDocument stored) {
         Document.Builder builder = Document.newBuilder()

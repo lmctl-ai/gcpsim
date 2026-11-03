@@ -233,6 +233,7 @@ public class SimAuthProbe {
             var update = stub(c, "update-token");
             var create = stub(c, "create-token");
             var listOnly = stub(c, "list-token");
+            var docDeny = stub(c, "docdeny-token");
             var bad = stub(c, "invalid-token");
 
             seed(admin, FOREIGN, "secret", "foreign");
@@ -347,7 +348,20 @@ public class SimAuthProbe {
                             .setCurrentDocument(Precondition.newBuilder().setExists(false))
                             .build()),
                     "updateDocument exists=false with update-only token");
-            // Update-only token CAN commit an update with exists=true on an existing document
+            expectStatus(Status.Code.PERMISSION_DENIED,
+                    () -> update.updateDocument(UpdateDocumentRequest.newBuilder()
+                            .setDocument(Document.newBuilder()
+                                    .setName(ROOT + "/secret/patch-unrestricted-upsert")
+                                    .putFields("k", Value.newBuilder().setStringValue("v").build()))
+                            .build()),
+                    "updateDocument unrestricted upsert with update-only token");
+            // Update-only token CAN commit or patch an update with exists=true on an existing document
+            update.updateDocument(UpdateDocumentRequest.newBuilder()
+                    .setDocument(Document.newBuilder()
+                            .setName(ROOT + "/secret/commit")
+                            .putFields("value", Value.newBuilder().setStringValue("patched").build()))
+                    .setCurrentDocument(Precondition.newBuilder().setExists(true))
+                    .build());
             update.commit(CommitRequest.newBuilder()
                     .setDatabase("projects/gcpsim-local/databases/(default)")
                     .addWrites(Write.newBuilder()
@@ -427,6 +441,88 @@ public class SimAuthProbe {
                     .setTransaction(tx.getTransaction())
                     .build());
 
+            // Round-4: document-scoped and descendant-scoped get denies enforced on ListDocuments / RunQuery / RunAggregationQuery
+            seed(admin, ROOT + "/allowed-col/ok-doc", "nested-col", "allowed-subdoc");
+            seed(admin, ROOT + "/allowed-col/ok-doc", "nested-col", "denied-subdoc");
+
+            // Direct GetDocument on allowed sibling succeeds; denied document fails with PERMISSION_DENIED
+            var allowedSibling = docDeny.getDocument(GetDocumentRequest.newBuilder().setName(ROOT + "/secret/batch").build());
+            if (!allowedSibling.getName().endsWith("/secret/batch")) {
+                throw new AssertionError("Expected secret/batch to be readable by docDeny: " + allowedSibling.getName());
+            }
+            expectStatus(Status.Code.PERMISSION_DENIED,
+                    () -> docDeny.getDocument(GetDocumentRequest.newBuilder().setName(ROOT + "/secret/commit").build()),
+                    "document-scoped deny on GetDocument");
+
+            // ListDocuments on collection containing a denied document fails closed with PERMISSION_DENIED (even with pageSize=1)
+            expectStatus(Status.Code.PERMISSION_DENIED,
+                    () -> docDeny.listDocuments(ListDocumentsRequest.newBuilder()
+                            .setParent(ROOT)
+                            .setCollectionId("secret")
+                            .build()),
+                    "document-scoped deny on ListDocuments");
+            expectStatus(Status.Code.PERMISSION_DENIED,
+                    () -> docDeny.listDocuments(ListDocumentsRequest.newBuilder()
+                            .setParent(ROOT)
+                            .setCollectionId("secret")
+                            .setPageSize(1)
+                            .build()),
+                    "document-scoped deny on paged ListDocuments");
+            var allowedList = docDeny.listDocuments(ListDocumentsRequest.newBuilder()
+                    .setParent(ROOT)
+                    .setCollectionId("allowed-col")
+                    .build());
+            if (allowedList.getDocumentsCount() != 1) {
+                throw new AssertionError("Expected 1 document in allowed-col, got " + allowedList.getDocumentsCount());
+            }
+
+            // RunQuery on collection or collection-group containing a denied document fails with PERMISSION_DENIED without streaming any document
+            for (StructuredQuery sq : List.of(
+                    StructuredQuery.newBuilder()
+                            .addFrom(StructuredQuery.CollectionSelector.newBuilder().setCollectionId("secret"))
+                            .build(),
+                    StructuredQuery.newBuilder()
+                            .addFrom(StructuredQuery.CollectionSelector.newBuilder().setCollectionId("secret").setAllDescendants(true))
+                            .build(),
+                    StructuredQuery.newBuilder()
+                            .addFrom(StructuredQuery.CollectionSelector.newBuilder().setCollectionId("nested-col").setAllDescendants(true))
+                            .build())) {
+                var it = docDeny.runQuery(RunQueryRequest.newBuilder()
+                        .setParent(ROOT)
+                        .setStructuredQuery(sq)
+                        .build());
+                expectStatus(Status.Code.PERMISSION_DENIED,
+                        () -> {
+                            while (it.hasNext()) {
+                                RunQueryResponse r = it.next();
+                                if (r.hasDocument()) {
+                                    throw new AssertionError("Streamed document before PERMISSION_DENIED: " + r.getDocument().getName());
+                                }
+                            }
+                        },
+                        "document/descendant deny on RunQuery " + sq.getFrom(0).getCollectionId());
+            }
+
+            // RunAggregationQuery on collection or collection-group containing a denied document fails with PERMISSION_DENIED
+            for (StructuredQuery sq : List.of(
+                    StructuredQuery.newBuilder()
+                            .addFrom(StructuredQuery.CollectionSelector.newBuilder().setCollectionId("secret"))
+                            .build(),
+                    StructuredQuery.newBuilder()
+                            .addFrom(StructuredQuery.CollectionSelector.newBuilder().setCollectionId("nested-col").setAllDescendants(true))
+                            .build())) {
+                expectStatus(Status.Code.PERMISSION_DENIED,
+                        () -> docDeny.runAggregationQuery(RunAggregationQueryRequest.newBuilder()
+                                .setParent(ROOT)
+                                .setStructuredAggregationQuery(StructuredAggregationQuery.newBuilder()
+                                        .setStructuredQuery(sq)
+                                        .addAggregations(StructuredAggregationQuery.Aggregation.newBuilder()
+                                                .setAlias("cnt")
+                                                .setCount(StructuredAggregationQuery.Aggregation.Count.getDefaultInstance())))
+                                .build()).hasNext(),
+                        "document/descendant deny on RunAggregationQuery " + sq.getFrom(0).getCollectionId());
+            }
+
             // Listen and UnknownMethod fail closed with PERMISSION_DENIED
             CountDownLatch listenLatch = new CountDownLatch(1);
             AtomicReference<Throwable> listenErr = new AtomicReference<>();
@@ -504,6 +600,7 @@ public class SimAuthProbe {
                 'update-token': 'user:update@example.test',
                 'create-token': 'user:create@example.test',
                 'list-token': 'user:list@example.test',
+                'docdeny-token': 'user:docdeny@example.test',
             },
             'Statement': [
                 {'Effect': 'Allow', 'ActionGlob': '*', 'ResourceGlob': '*', 'Principal': 'user:admin@example.test'},
@@ -518,6 +615,9 @@ public class SimAuthProbe {
                 {'Effect': 'Deny', 'Action': 'datastore.entities.delete', 'ResourceGlob': '*', 'Principal': 'user:create@example.test'},
                 {'Effect': 'Allow', 'Action': 'datastore.entities.list', 'ResourceGlob': 'projects/gcpsim-local', 'Principal': 'user:list@example.test'},
                 {'Effect': 'Deny', 'Action': 'datastore.entities.get', 'ResourceGlob': '*', 'Principal': 'user:list@example.test'},
+                {'Effect': 'Allow', 'ActionGlob': 'datastore.entities.*', 'ResourceGlob': 'projects/gcpsim-local', 'Principal': 'user:docdeny@example.test'},
+                {'Effect': 'Deny', 'Action': 'datastore.entities.get', 'ResourceGlob': 'projects/gcpsim-local/databases/(default)/documents/secret/commit', 'Principal': 'user:docdeny@example.test'},
+                {'Effect': 'Deny', 'Action': 'datastore.entities.get', 'ResourceGlob': 'projects/gcpsim-local/databases/(default)/documents/allowed-col/ok-doc/nested-col/denied-subdoc', 'Principal': 'user:docdeny@example.test'},
             ],
         }
         grpc_auth_path = tmp / 'grpc-auth.json'

@@ -131,6 +131,25 @@ public class BearerGuard {
         }
     }
 
+    public static void authorizeFirestoreDocumentRead(String docName) {
+        if (!AuthConfig.enforce) {
+            return;
+        }
+        String rawAuth = GRPC_AUTH_KEY.get();
+        Matcher bearer = BEARER.matcher(rawAuth == null ? "" : rawAuth);
+        if (!bearer.matches() || !AuthConfig.tokens.containsKey(bearer.group(1))) {
+            throw Status.UNAUTHENTICATED.withDescription("Request requires valid authentication credentials.").asRuntimeException();
+        }
+        String principal = AuthConfig.tokens.get(bearer.group(1));
+        try {
+            requireDocumentPath(docName);
+            authorizeResource(principal, "datastore.entities.get", docName);
+            authorizeResource(principal, "datastore.entities.list", docName);
+        } catch (Exception e) {
+            throw Status.PERMISSION_DENIED.withDescription("Request is not permitted by the emulator auth configuration.").asRuntimeException();
+        }
+    }
+
     static void authorizeFirestoreMessage(String principal, String method, Object message) {
         switch (method) {
             case "GetDocument" -> {
@@ -156,13 +175,7 @@ public class BearerGuard {
                 }
                 String doc = req.getDocument().getName();
                 requireDocumentPath(doc);
-                if (req.hasCurrentDocument()
-                        && req.getCurrentDocument().getConditionTypeCase() == Precondition.ConditionTypeCase.EXISTS
-                        && !req.getCurrentDocument().getExists()) {
-                    authorizeResource(principal, "datastore.entities.create", doc);
-                } else {
-                    authorizeResource(principal, "datastore.entities.update", doc);
-                }
+                authorizeWritePrecondition(principal, doc, req.hasCurrentDocument() ? req.getCurrentDocument() : null);
             }
             case "DeleteDocument" -> {
                 DeleteDocumentRequest req = (DeleteDocumentRequest) message;
@@ -230,7 +243,9 @@ public class BearerGuard {
             case "BatchGetDocuments" -> {
                 BatchGetDocumentsRequest req = (BatchGetDocumentsRequest) message;
                 requireDatabasePath(req.getDatabase());
-                authorizeResource(principal, "datastore.entities.get", req.getDatabase());
+                if (req.getDocumentsCount() == 0) {
+                    authorizeResource(principal, "datastore.entities.get", req.getDatabase());
+                }
                 for (String doc : req.getDocumentsList()) {
                     requireDocumentInDatabase(req.getDatabase(), doc);
                     authorizeResource(principal, "datastore.entities.get", doc);
@@ -239,29 +254,33 @@ public class BearerGuard {
             case "RunQuery" -> {
                 RunQueryRequest req = (RunQueryRequest) message;
                 requireParentPath(req.getParent());
-                authorizeResource(principal, "datastore.entities.get", req.getParent());
-                authorizeResource(principal, "datastore.entities.list", req.getParent());
-                if (req.hasStructuredQuery()) {
+                if (req.hasStructuredQuery() && req.getStructuredQuery().getFromCount() > 0) {
                     for (StructuredQuery.CollectionSelector sel : req.getStructuredQuery().getFromList()) {
                         requireSingleSegment(sel.getCollectionId());
                         String target = req.getParent() + "/" + sel.getCollectionId();
                         authorizeResource(principal, "datastore.entities.get", target);
                         authorizeResource(principal, "datastore.entities.list", target);
                     }
+                } else {
+                    authorizeResource(principal, "datastore.entities.get", req.getParent());
+                    authorizeResource(principal, "datastore.entities.list", req.getParent());
                 }
             }
             case "RunAggregationQuery" -> {
                 RunAggregationQueryRequest req = (RunAggregationQueryRequest) message;
                 requireParentPath(req.getParent());
-                authorizeResource(principal, "datastore.entities.get", req.getParent());
-                authorizeResource(principal, "datastore.entities.list", req.getParent());
-                if (req.hasStructuredAggregationQuery() && req.getStructuredAggregationQuery().hasStructuredQuery()) {
+                if (req.hasStructuredAggregationQuery()
+                        && req.getStructuredAggregationQuery().hasStructuredQuery()
+                        && req.getStructuredAggregationQuery().getStructuredQuery().getFromCount() > 0) {
                     for (StructuredQuery.CollectionSelector sel : req.getStructuredAggregationQuery().getStructuredQuery().getFromList()) {
                         requireSingleSegment(sel.getCollectionId());
                         String target = req.getParent() + "/" + sel.getCollectionId();
                         authorizeResource(principal, "datastore.entities.get", target);
                         authorizeResource(principal, "datastore.entities.list", target);
                     }
+                } else {
+                    authorizeResource(principal, "datastore.entities.get", req.getParent());
+                    authorizeResource(principal, "datastore.entities.list", req.getParent());
                 }
             }
             default -> throw new IllegalArgumentException("Unsupported Firestore method: " + method);
