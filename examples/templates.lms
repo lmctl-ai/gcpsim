@@ -1,5 +1,4 @@
-# Run through scripts/test-templates.py; uses checksum-pinned lmgcp on PATH.
-# prepare writes the IAM config before startup; run and denied use the same context.
+# Run through scripts/test-templates.py; prepare writes only local JSON fixtures.
 bucket = "lmgcp-templates";
 project = "gcpsim-local";
 principal = "user:templates@example.com";
@@ -30,25 +29,6 @@ pubsub = _json_;
 {"topic": ${bucket}, "subscription": "lmgcp-template-sub", "message": "message: ${note}", "attributes": {"note": ${note}}, "ackDeadlineSeconds": ${30}}
 end _json_
 body = json_stringify(object.content);
-if (ARGV[0] == "prepare") {
-  write_json("auth.json", config);
-  write_json("expected.json", {create: create, object: object, pubsub: pubsub});
-} else if (ARGV[0] == "run" || ARGV[0] == "denied") {
-  # lmgcp v0.1.9 and its drawing dependency read bytecode v5. Use an isolated
-  # compiler for that ABI; template construction stays on the current engine.
-  compiler = env("LMGCP_COMPILER");
-  fixture = env("LMGCP_TEMPLATE_CLIENT");
-  assert(compiler != null && fixture != null, "run via scripts/test-templates.py");
-  compiled = system([which("node"), compiler, fixture, ARGV[0]]);
-  assert(compiled.code == 0, compiled.stdout + compiled.stderr);
-  result = system(["lmgcp", "--lmcode", "templates.dslb"]);
-  if (ARGV[0] == "run") {
-    assert(result.code == 0, result.stdout + result.stderr);
-    assert(json_parse(result.stdout).ok, "client must report success");
-  } else {
-    assert(result.code == 4, "denied client call must exit 4");
-    assert(json_parse(result.stdout).code == "APP_FAIL", "client error envelope");
-    assert(contains(result.stdout, "403"), "client must retain HTTP status");
-  }
-} else { assert(false, "expected prepare, run, or denied"); }
-println("PASS templates " + ARGV[0]);
+write_json("auth.json", config);
+write_json("expected.json", {create: create, object: object, pubsub: pubsub});
+println("PASS templates prepare");

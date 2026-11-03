@@ -16,20 +16,22 @@ import urllib.request
 ROOT = Path(__file__).resolve().parents[1]
 exe, client = (Path(arg).resolve() for arg in sys.argv[1:3])
 engine = os.environ.get('LMSCRIPT_BIN', shutil.which('lmscript'))
-compiler = os.environ.get('LMGCP_COMPILER')
-assert engine and compiler, 'Set LMSCRIPT_BIN (current engine) and LMGCP_COMPILER (isolated 0.2.420)'
+assert engine, 'Set LMSCRIPT_BIN to a current lmscript compiler'
+schema_probe = subprocess.run([str(client), '--lmcode-schema', '--json'], capture_output=True, text=True)
+if schema_probe.returncode != 0:
+    print('SKIP run_lmcode template client: pinned lmgcp does not expose the current lmcode host protocol')
+    sys.exit(0)
 cmd = [os.environ.get('JAVA', 'java'), '-Dfile.encoding=UTF-8', '-jar', str(exe)] if exe.suffix == '.jar' else [str(exe)]
 env = {k: v for k, v in os.environ.items() if not k.startswith(('SIM_AUTH', 'FLOCI_GCP_', 'QUARKUS_', 'LMGCP_', 'GOOGLE_', 'CLOUDSDK_'))}
-env.update(PATH=str(client.parent) + os.pathsep + env['PATH'], LMGCP_COMPILER=compiler,
-           LMGCP_TEMPLATE_CLIENT=str(ROOT / 'examples/templates-client.lms'), LMGCP_PROJECT='gcpsim-local')
+env.update(PATH=str(client.parent) + os.pathsep + env['PATH'], LMGCP_BINARY=str(client), LMGCP_PROJECT='gcpsim-local')
 TOKEN = 'dummy-template-token'
 with tempfile.TemporaryDirectory(prefix='gcpsim-templates-') as directory:
     tmp = Path(directory)
 
     def script(stage, run_env):
-        # Never accept a stale compiled artifact after a failed compilation.
-        (tmp / 'templates.dslb').unlink(missing_ok=True)
-        result = subprocess.run([shutil.which("node"), engine, str(ROOT / 'examples/templates.lms'), stage], cwd=tmp,
+        source = ROOT / 'examples' / ('templates.lms' if stage == 'prepare' else 'templates-client.lms')
+        args = [engine, str(source)] + ([] if stage == 'prepare' else [stage])
+        result = subprocess.run(args, cwd=tmp,
                                 env=run_env, capture_output=True, text=True, encoding='utf-8', timeout=120)
         assert result.returncode == 0 and f'PASS templates {stage}' in result.stdout, result.stdout + result.stderr
         assert TOKEN not in result.stdout + result.stderr

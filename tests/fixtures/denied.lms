@@ -1,4 +1,7 @@
-p = _dsl_ cli="lmgcp";
+# The HTTP denial is returned as a controlled invocation result.
+program = _lmcode_ cli="lmgcp" install="github:lmctl-ai/lmgcp@latest";
   let bucket = gcp.storage_get_bucket("lmgcp-integration");
-end _dsl_
-savedsl(p, "denied.dslb");
+  $return = bucket.name();
+end _lmcode_
+result = run_lmcode(program, {command:[env("LMGCP_BINARY"), "--lmcode", "$DSLFILE"]});
+println(json_stringify(result));

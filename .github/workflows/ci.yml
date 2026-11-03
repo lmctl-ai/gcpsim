@@ -56,11 +56,10 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 24
-      - name: Install isolated template and client compilers
+      - name: Install current lmscript compiler in a private prefix
         run: |
-          npm install --prefix .cache/templates @lmctl-ai/lmctl@0.2.444
-          npm install --prefix .cache/client-compiler @lmctl-ai/lmctl@0.2.420
-          python -c "import os,pathlib; r=pathlib.Path('.cache').resolve(); open(os.environ['GITHUB_ENV'],'a').write('LMSCRIPT_BIN='+str(r/'templates/node_modules/@lmctl-ai/lmctl/bin/lmscript')+'\nLMGCP_COMPILER='+str(r/'client-compiler/node_modules/@lmctl-ai/lmctl/bin/lmscript')+'\n')"
+          npm install --prefix .cache/templates --no-save --package-lock=false @lmctl-ai/lmctl@latest
+          python -c "import os,pathlib; r=pathlib.Path('.cache/templates/node_modules/@lmctl-ai/lmctl/bin/lmscript').resolve(); open(os.environ['GITHUB_ENV'],'a').write('LMSCRIPT_BIN='+str(r)+'\n')"
       - name: JVM build and real client tests
         run: |
           python scripts/build.py

@@ -1,4 +1,5 @@
-p = _dsl_ cli="lmgcp";
+# Same-input integration fixture: run the real lmgcp command builder against gcpsim.
+program = _lmcode_ cli="lmgcp" install="github:lmctl-ai/lmgcp@latest";
   let bucket = gcp.storage_create_bucket("lmgcp-integration", "US", "STANDARD");
   let put = gcp.storage_put_object("lmgcp-integration", "hello.txt", "gcpsim-roundtrip", "text/plain");
   let content = gcp.storage_read_object("lmgcp-integration", "hello.txt");
@@ -10,5 +11,8 @@ p = _dsl_ cli="lmgcp";
   let messages = gcp.pubsub_pull("lmgcp-integration", 1);
   assert_close(float(messages.len()), 1.0, 0.0);
   if (messages.at(0) != "gcpsim-message") { assert_close(0.0, 1.0, 0.0); }
-end _dsl_
-savedsl(p, "roundtrip.dslb");
+  $return = "roundtrip complete";
+end _lmcode_
+result = run_lmcode(program, {command:[env("LMGCP_BINARY"), "--lmcode", "$DSLFILE"]});
+assert(result.ok, "GCS/Pub/Sub roundtrip failed: " + json_stringify(result));
+println(json_stringify(result));

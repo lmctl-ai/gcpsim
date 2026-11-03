@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -17,8 +18,11 @@ client = Path(sys.argv[2]).resolve() if len(sys.argv) > 2 else None
 if client is not None:
     help_out = subprocess.run([str(client), '--help'], capture_output=True, text=True, encoding='utf-8').stdout
     if '--lmcode' not in help_out:
-        print('SKIP: pinned lmgcp client lacks --lmcode (only --dsl); client integration skipped')
+        print('SKIP: pinned lmgcp client does not expose the current lmcode host protocol; client integration skipped')
         client = None
+engine = os.environ.get('LMSCRIPT_BIN') or shutil.which('lmscript')
+if client is not None:
+    assert engine, 'LMSCRIPT_BIN is required for run_lmcode client checks'
 cmd = [os.environ.get('JAVA', 'java'), '-Dfile.encoding=UTF-8', '-jar', str(exe)] if exe.suffix == '.jar' else [str(exe)]
 env = {k: v for k, v in os.environ.items() if not k.startswith(('SIM_AUTH', 'FLOCI_GCP_', 'QUARKUS_', 'LMGCP_', 'GOOGLE_', 'CLOUDSDK_'))}
 TOKEN = 'dummy-private-token'
@@ -65,17 +69,18 @@ with tempfile.TemporaryDirectory(prefix='gcpsim-auth-') as directory:
                     assert TOKEN.encode() not in raw
                 return json.loads(raw) if raw else None
         def cli(fixture, token=TOKEN, error=None):
-            ce = dict(env, LMGCP_ENDPOINT=endpoint, LMGCP_PROJECT='gcpsim-local')
+            ce = dict(env, LMGCP_ENDPOINT=endpoint, LMGCP_PROJECT='gcpsim-local', LMGCP_BINARY=str(client))
             if token is not None:
                 ce['LMGCP_ACCESS_TOKEN'] = token
-            result = subprocess.run([str(client), '--lmcode', str(ROOT / 'tests/fixtures' / fixture)], cwd=tmp, env=ce, capture_output=True, text=True, encoding='utf-8', timeout=90)
+            source = ROOT / 'tests/fixtures' / fixture
+            result = subprocess.run([engine, str(source)], cwd=tmp, env=ce, capture_output=True, text=True, encoding='utf-8', timeout=90)
             combined = result.stdout + result.stderr
             assert TOKEN not in combined and 'wrong-private-token' not in combined, combined
+            envelope = json.loads([line for line in result.stdout.splitlines() if line.strip()][-1])
             if error:
-                assert result.returncode == 4 and str(error) in combined, (result.returncode, combined)
-                assert json.loads(result.stdout)['code'] == 'APP_FAIL', result.stdout
+                assert result.returncode == 0 and envelope.get('ok') is False and str(error) in combined, (result.returncode, envelope, combined)
             else:
-                assert result.returncode == 0, combined
+                assert result.returncode == 0 and envelope.get('ok') is True, (result.returncode, envelope, combined)
         with (tmp / 'server.log').open('w', encoding='utf-8') as log:
             server = subprocess.Popen(cmd + args, env=server_env, cwd=tmp, stdout=log, stderr=log)
             try:
@@ -126,12 +131,12 @@ with tempfile.TemporaryDirectory(prefix='gcpsim-auth-') as directory:
         req('/compute/v1/projects/gcpsim-local', status=403)
         print('PASS: credentials; allow/deny; newline and multipart resource identity; unsupported transports fail closed')
         if client:
-            cli('roundtrip.dslb')
+            cli('roundtrip.lms')
             # Independent simulator reads prove the client did not use its internal fake.
             req('/storage/v1/b/lmgcp-integration/o/hello.txt')
             req('/v1/projects/gcpsim-local/topics/lmgcp-integration')
-            cli('denied.dslb', token=None, error=401)
-            cli('denied.dslb', token='wrong-private-token', error=401)
+            cli('denied.lms', token=None, error=401)
+            cli('denied.lms', token='wrong-private-token', error=401)
             print('PASS: lmgcp binary -> GCS upload/download + Pub/Sub publish/pull; CLI 401 exit/no token leakage')
     run({'tokens': {TOKEN: PRINCIPAL, 'other-dummy-token': 'user:other@example.com'}, 'Statement': [
         {'Effect': 'Deny', 'ActionGlob': '*.delete', 'ResourceGlob': '*'},
@@ -149,7 +154,7 @@ with tempfile.TemporaryDirectory(prefix='gcpsim-auth-') as directory:
         req('/storage/v1/b/other-bucket', status=403)
         req('/v1/projects/other-project/topics/fixture-topic', 'PUT', {}, status=403)
         if client:
-            cli('denied.dslb', error=403)
+            cli('denied.lms', error=403)
         print('PASS: upstream bucket bindings, Pub/Sub publisher bindings, wildcard action/resource, default deny, client 403')
     run({'tokens': {TOKEN: PRINCIPAL}, 'Statement': [
         {'Effect': 'Allow', 'ActionGlob': '*.create', 'ResourceGlob': 'projects/gcpsim-local'},
