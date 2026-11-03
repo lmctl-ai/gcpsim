@@ -10,7 +10,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
-/** Adds finite Pub/Sub roles to the upstream IAM evaluator; REST mapping lives in our filter. */
+/** Adds finite Pub/Sub and Firestore/Datastore roles to the upstream IAM evaluator. */
 @ApplicationScoped
 public class PubsubRoles implements IamAuthorizationAdapter {
     public String serviceName() { return "gcpsim-pubsub"; }
@@ -21,8 +21,12 @@ public class PubsubRoles implements IamAuthorizationAdapter {
     public List<IamPermissionCheck> checks(IamOperation operation) { throw unsupported(operation.name()); }
     public Optional<IamResource> resource(String name) { return Optional.empty(); }
     public Map<String, Set<String>> roles() {
-        return Map.of("roles/pubsub.publisher", Set.of("pubsub.topics.publish"),
+        return Map.of(
+            "roles/pubsub.publisher", Set.of("pubsub.topics.publish"),
             "roles/pubsub.subscriber", Set.of("pubsub.subscriptions.consume", "pubsub.topics.attachSubscription"),
-            "roles/pubsub.viewer", Set.of("pubsub.topics.get", "pubsub.topics.list", "pubsub.subscriptions.get", "pubsub.subscriptions.list"));
+            "roles/pubsub.viewer", Set.of("pubsub.topics.get", "pubsub.topics.list", "pubsub.subscriptions.get", "pubsub.subscriptions.list"),
+            "roles/datastore.user", Set.of("datastore.entities.create", "datastore.entities.get", "datastore.entities.update", "datastore.entities.delete", "datastore.entities.list", "datastore.databases.get", "datastore.databases.listCollectionIds"),
+            "roles/datastore.viewer", Set.of("datastore.entities.get", "datastore.entities.list", "datastore.databases.get", "datastore.databases.listCollectionIds")
+        );
     }
 }
