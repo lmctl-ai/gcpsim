@@ -1,5 +1,7 @@
 # gcpsim
 
+Documentation: [Quick reference](https://www.lmctl.com/tools/gcpsim/) · [LLM skill](https://www.lmctl.com/tools/gcpsim/skill.html) · [Guide](https://www.lmctl.com/tools/gcpsim/guide.html) · [Reference](https://www.lmctl.com/tools/gcpsim/reference.html)
+
 A local GCP emulator built on [floci-gcp](https://github.com/floci-io/floci-gcp),
 packaged as one native executable. In open mode, REST and gRPC share port **4588**. No GCP
 account, Java installation, or Docker is needed to run the native binary for
